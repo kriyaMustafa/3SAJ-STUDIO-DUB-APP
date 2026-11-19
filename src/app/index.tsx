@@ -1,0 +1,828 @@
+import React, { useState } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  FlatList,
+  StyleSheet,
+  Alert,
+  Modal,
+  TextInput,
+  ActivityIndicator,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import * as DocumentPicker from 'expo-document-picker';
+import {
+  Plus,
+  Settings as SettingsIcon,
+  Video,
+  FileText,
+  Trash2,
+  HardDrive,
+  CheckCircle2,
+  FolderOpen,
+  Link2,
+  Sparkles,
+  Zap,
+  Award,
+  Crown,
+} from 'lucide-react-native';
+import { useProjectStore } from '../store/useProjectStore';
+import { Project } from '../types/project';
+import { ImportFromUrlModal } from '../components/modals/ImportFromUrlModal';
+import { checkAppLicense } from '../services/licenseService';
+import { LicenseStatus, TIER_CONFIGS } from '../types/license';
+
+export default function ProjectDashboardScreen() {
+  const router = useRouter();
+  const {
+    projects,
+    settings,
+    createProject,
+    deleteProject,
+    cleanupProjectCache,
+    selectProject,
+    importFromUrlAndTranslate,
+  } = useProjectStore();
+
+  const [modalVisible, setModalVisible] = useState(false);
+  const [urlModalVisible, setUrlModalVisible] = useState(false);
+  const [projectName, setProjectName] = useState('');
+  const [videoFile, setVideoFile] = useState<{ uri: string; name: string } | null>(null);
+  const [srtFile, setSrtFile] = useState<{ uri: string; name: string } | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [licenseInfo, setLicenseInfo] = useState<LicenseStatus | null>(null);
+
+  React.useEffect(() => {
+    checkAppLicense().then(setLicenseInfo).catch(() => {});
+  }, []);
+
+  const handlePickVideo = async () => {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['video/mp4', 'video/*'],
+        copyToCacheDirectory: true,
+      });
+
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        const asset = res.assets[0];
+        setVideoFile({ uri: asset.uri, name: asset.name });
+        if (!projectName) {
+          setProjectName(asset.name.replace(/\.[^/.]+$/, ''));
+        }
+      }
+    } catch (err) {
+      console.warn('Error picking video:', err);
+    }
+  };
+
+  const handlePickSrt = async () => {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['*/*'],
+        copyToCacheDirectory: true,
+      });
+
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        const asset = res.assets[0];
+        if (!asset.name.toLowerCase().endsWith('.srt')) {
+          Alert.alert('Invalid File', 'Please select a valid .srt subtitle file.');
+          return;
+        }
+        setSrtFile({ uri: asset.uri, name: asset.name });
+      }
+    } catch (err) {
+      console.warn('Error picking SRT:', err);
+    }
+  };
+
+  const handleCreateProject = async () => {
+    if (!projectName.trim() || !videoFile || !srtFile) {
+      Alert.alert(
+        'Missing Information',
+        'Please enter a project name and select both a video file and an .srt subtitle file.'
+      );
+      return;
+    }
+
+    setIsCreating(true);
+    try {
+      const newProjectId = await createProject(
+        projectName.trim(),
+        videoFile.uri,
+        srtFile.uri
+      );
+      setModalVisible(false);
+      setProjectName('');
+      setVideoFile(null);
+      setSrtFile(null);
+      router.push(`/editor/${newProjectId}`);
+    } catch (err: any) {
+      Alert.alert('Project Creation Failed', err.message || 'Unknown error');
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  const handleOpenProject = async (project: Project) => {
+    await selectProject(project.id);
+    router.push(`/editor/${project.id}`);
+  };
+
+  const handleCleanupCache = (project: Project) => {
+    Alert.alert(
+      'Free Up Memory',
+      `Delete temporary TTS .mp3 chunks and intermediate audio files for "${project.name}"? Final exported videos will be preserved.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clean Cache',
+          style: 'destructive',
+          onPress: async () => {
+            await cleanupProjectCache(project.id);
+            Alert.alert('Cleaned', 'Temporary project cache cleared successfully.');
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteProject = (project: Project) => {
+    Alert.alert(
+      'Delete Project',
+      `Are you sure you want to delete "${project.name}" and all its workspace data?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteProject(project.id);
+          },
+        },
+      ]
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      {/* Top Header */}
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.appTitle}>3SAJ STUDIO</Text>
+          <Text style={styles.appSubtitle}>
+            Khmer AI Donghua & Drama Dubbing
+          </Text>
+        </View>
+
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          {licenseInfo?.isValid && licenseInfo.license && (
+            <TouchableOpacity
+              style={[
+                styles.headerPlanBadge,
+                { borderColor: TIER_CONFIGS[licenseInfo.license.tier].badgeColor },
+              ]}
+              onPress={() => router.push('/settings')}
+            >
+              {licenseInfo.license.tier === 'FLASH' && <Zap size={13} color="#F59E0B" />}
+              {licenseInfo.license.tier === 'PRO' && <Award size={13} color="#38BDF8" />}
+              {licenseInfo.license.tier === 'PREMIUM' && <Crown size={13} color="#A855F7" />}
+              <Text
+                style={[
+                  styles.headerPlanText,
+                  { color: TIER_CONFIGS[licenseInfo.license.tier].badgeColor },
+                ]}
+              >
+                {TIER_CONFIGS[licenseInfo.license.tier].displayName}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            style={styles.settingsBtn}
+            onPress={() => router.push('/settings')}
+          >
+            <SettingsIcon size={22} color="#F8FAFC" />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Workspace Indicator Card */}
+      <View style={styles.workspaceCard}>
+        <View style={styles.workspaceHeader}>
+          <FolderOpen size={16} color="#38BDF8" />
+          <Text style={styles.workspaceTitle}>Active Workspace Directory</Text>
+        </View>
+        <Text style={styles.workspacePath} numberOfLines={1}>
+          {settings.workspaceDir}
+        </Text>
+      </View>
+
+      {/* URL Downloader & Auto-Translate Hero Banner */}
+      <TouchableOpacity
+        style={styles.urlBanner}
+        onPress={() => setUrlModalVisible(true)}
+        activeOpacity={0.85}
+      >
+        <View style={styles.urlBannerLeft}>
+          <View style={styles.urlBannerIcon}>
+            <Link2 size={20} color="#818CF8" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={styles.urlBannerTitle}>Import from Video URL</Text>
+              <View style={styles.autoBadge}>
+                <Sparkles size={10} color="#10B981" />
+                <Text style={styles.autoBadgeText}>Auto-Translate</Text>
+              </View>
+            </View>
+            <Text style={styles.urlBannerDesc} numberOfLines={1}>
+              Paste YouTube or Bilibili link • Auto-Download & Dub
+            </Text>
+          </View>
+        </View>
+        <View style={styles.urlBannerAction}>
+          <Text style={styles.urlBannerActionText}>Paste Link</Text>
+        </View>
+      </TouchableOpacity>
+
+      {/* Action Bar */}
+      <View style={styles.actionBar}>
+        <Text style={styles.sectionTitle}>
+          Projects ({projects.length})
+        </Text>
+        <View style={styles.actionBtnGroup}>
+          <TouchableOpacity
+            style={styles.urlQuickBtn}
+            onPress={() => setUrlModalVisible(true)}
+          >
+            <Link2 size={15} color="#818CF8" />
+            <Text style={styles.urlQuickBtnText}>From URL</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.newProjectBtn}
+            onPress={() => setModalVisible(true)}
+          >
+            <Plus size={16} color="#FFFFFF" />
+            <Text style={styles.newProjectText}>New File</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Projects List */}
+      <FlatList
+        data={projects}
+        keyExtractor={(p) => p.id}
+        contentContainerStyle={styles.listContent}
+        renderItem={({ item }) => (
+          <TouchableOpacity
+            style={styles.projectCard}
+            onPress={() => handleOpenProject(item)}
+            activeOpacity={0.8}
+          >
+            <View style={styles.projectCardTop}>
+              <View style={styles.projectTitleContainer}>
+                <Text style={styles.projectName}>{item.name}</Text>
+                <Text style={styles.projectDate}>
+                  {new Date(item.updatedAt).toLocaleDateString()} • {item.totalSegments} Segments
+                </Text>
+              </View>
+
+              {item.isExported && (
+                <View style={styles.exportedBadge}>
+                  <CheckCircle2 size={12} color="#10B981" />
+                  <Text style={styles.exportedText}>Exported</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Metrics Chips */}
+            <View style={styles.metricsRow}>
+              <View style={styles.metricChip}>
+                <Text style={styles.metricLabel}>Translated:</Text>
+                <Text style={styles.metricValue}>
+                  {item.translatedSegments} / {item.totalSegments}
+                </Text>
+              </View>
+
+              <View style={styles.metricChip}>
+                <Text style={styles.metricLabel}>TTS Audio:</Text>
+                <Text style={styles.metricValue}>
+                  {item.audioSegments} / {item.totalSegments}
+                </Text>
+              </View>
+            </View>
+
+            {/* Bottom Actions */}
+            <View style={styles.cardBottomRow}>
+              <TouchableOpacity
+                style={styles.cleanBtn}
+                onPress={() => handleCleanupCache(item)}
+              >
+                <HardDrive size={14} color="#F59E0B" />
+                <Text style={styles.cleanBtnText}>Free Cache</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.deleteBtn}
+                onPress={() => handleDeleteProject(item)}
+              >
+                <Trash2 size={14} color="#EF4444" />
+                <Text style={styles.deleteBtnText}>Delete</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        )}
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Video size={48} color="#334155" />
+            <Text style={styles.emptyTitle}>No Projects Yet</Text>
+            <Text style={styles.emptySubtitle}>
+              Tap "New Dubbing Project" to import a video and .srt file.
+            </Text>
+          </View>
+        }
+      />
+
+      {/* New Project Modal */}
+      <Modal
+        visible={modalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalHeaderTitle}>Create Dubbing Project</Text>
+
+            {/* Project Name */}
+            <Text style={styles.fieldLabel}>Project Name:</Text>
+            <TextInput
+              style={styles.textInput}
+              value={projectName}
+              onChangeText={setProjectName}
+              placeholder="e.g. Battle Through The Heavens Ep 1"
+              placeholderTextColor="#64748B"
+            />
+
+            {/* Video File Picker */}
+            <Text style={styles.fieldLabel}>Source Video (.mp4):</Text>
+            <TouchableOpacity
+              style={[styles.filePickerBtn, videoFile && styles.filePickerSelected]}
+              onPress={handlePickVideo}
+            >
+              <Video size={18} color={videoFile ? '#38BDF8' : '#94A3B8'} />
+              <Text
+                style={[styles.filePickerText, videoFile && styles.filePickerTextSelected]}
+                numberOfLines={1}
+              >
+                {videoFile ? videoFile.name : 'Select Video File...'}
+              </Text>
+            </TouchableOpacity>
+
+            {/* Subtitle File Picker */}
+            <Text style={styles.fieldLabel}>Source Subtitles (.srt):</Text>
+            <TouchableOpacity
+              style={[styles.filePickerBtn, srtFile && styles.filePickerSelected]}
+              onPress={handlePickSrt}
+            >
+              <FileText size={18} color={srtFile ? '#FDE047' : '#94A3B8'} />
+              <Text
+                style={[styles.filePickerText, srtFile && styles.filePickerTextSelected]}
+                numberOfLines={1}
+              >
+                {srtFile ? srtFile.name : 'Select .SRT File...'}
+              </Text>
+            </TouchableOpacity>
+
+            {/* Modal Actions */}
+            <View style={styles.modalActionsRow}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setModalVisible(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalCreateBtn, isCreating && { opacity: 0.6 }]}
+                onPress={handleCreateProject}
+                disabled={isCreating}
+              >
+                {isCreating ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.modalCreateText}>Import & Initialize</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* URL Downloader & Auto-Translate Modal */}
+      <ImportFromUrlModal
+        visible={urlModalVisible}
+        onClose={() => setUrlModalVisible(false)}
+        onImport={importFromUrlAndTranslate}
+        onSuccess={(newProjectId) => {
+          router.push(`/editor/${newProjectId}`);
+        }}
+      />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#0F172A',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+  },
+  appTitle: {
+    color: '#F8FAFC',
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  appSubtitle: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  settingsBtn: {
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: '#1E293B',
+  },
+  headerPlanBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+  },
+  headerPlanText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  workspaceCard: {
+    margin: 16,
+    marginBottom: 8,
+    backgroundColor: '#1E293B',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  workspaceHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  workspaceTitle: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  workspacePath: {
+    color: '#E2E8F0',
+    fontSize: 12,
+    fontFamily: 'monospace',
+  },
+  urlBanner: {
+    marginHorizontal: 16,
+    marginBottom: 6,
+    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.25)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  urlBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 10,
+  },
+  urlBannerIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  urlBannerTitle: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  urlBannerDesc: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  autoBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    gap: 3,
+  },
+  autoBadgeText: {
+    color: '#10B981',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  urlBannerAction: {
+    backgroundColor: '#6366F1',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  urlBannerActionText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  actionBtnGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  urlQuickBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1E293B',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    gap: 5,
+  },
+  urlQuickBtnText: {
+    color: '#818CF8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  actionBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  sectionTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  newProjectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#4F46E5',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    gap: 6,
+  },
+  newProjectText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  listContent: {
+    padding: 16,
+    gap: 12,
+  },
+  projectCard: {
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  projectCardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 10,
+  },
+  projectTitleContainer: {
+    flex: 1,
+  },
+  projectName: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  projectDate: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  exportedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    gap: 4,
+  },
+  exportedText: {
+    color: '#10B981',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  metricsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  metricChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F172A',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    gap: 6,
+  },
+  metricLabel: {
+    color: '#94A3B8',
+    fontSize: 11,
+  },
+  metricValue: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  cardBottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#334155',
+    paddingTop: 10,
+  },
+  cleanBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+  },
+  cleanBtnText: {
+    color: '#F59E0B',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  deleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+  },
+  deleteBtnText: {
+    color: '#EF4444',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+  },
+  emptyTitle: {
+    color: '#CBD5E1',
+    fontSize: 18,
+    fontWeight: '700',
+    marginTop: 12,
+  },
+  emptySubtitle: {
+    color: '#64748B',
+    fontSize: 13,
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  modalContent: {
+    backgroundColor: '#1E293B',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  modalHeaderTitle: {
+    color: '#F8FAFC',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 16,
+  },
+  fieldLabel: {
+    color: '#CBD5E1',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  textInput: {
+    backgroundColor: '#0F172A',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#FFFFFF',
+    fontSize: 14,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  filePickerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#0F172A',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  filePickerSelected: {
+    borderColor: '#4F46E5',
+    backgroundColor: '#1E1B4B',
+  },
+  filePickerText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    flex: 1,
+  },
+  filePickerTextSelected: {
+    color: '#F8FAFC',
+    fontWeight: '600',
+  },
+  modalActionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+    marginTop: 10,
+  },
+  modalCancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#334155',
+  },
+  modalCancelText: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  modalCreateBtn: {
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#10B981',
+  },
+  modalCreateText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+});

@@ -1,0 +1,60 @@
+{
+  "expo": {
+    "name": "3SAJ Studio",
+    "slug": "3saj-studio-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "sajstudio",
+    "userInterfaceStyle": "dark",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0F172A"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.saj.studio.dubbing",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "3SAJ Studio needs access to save and import localized videos.",
+        "NSPhotoLibraryAddUsageDescription": "3SAJ Studio needs access to export final dubbed videos to your camera roll.",
+        "NSMicrophoneUsageDescription": "3SAJ Studio requires audio processing capabilities."
+      }
+    },
+    "android": {
+      "package": "com.saj.studio.dubbing",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#010001"
+      },
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_VIDEO",
+        "READ_MEDIA_AUDIO",
+        "INTERNET",
+        "WAKE_LOCK"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-sqlite",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Grant access to import source videos and save dubbed exports.",
+          "savePhotosPermission": "Grant access to save your exported video with zero watermark."
+        }
+      ],
+      [
+        "./plugins/withFFmpegKit",
+        {
+          "package": "full-gpl"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

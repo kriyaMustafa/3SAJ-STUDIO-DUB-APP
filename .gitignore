@@ -1,0 +1,28 @@
+node_modules/
+.expo/
+dist/
+npm-debug.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+
+# Android build outputs and caches
+android/.gradle/
+android/app/build/
+android/build/
+*.apk
+*.aab
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# Environment / keys
+.env
+.env.local
