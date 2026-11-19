@@ -14,6 +14,8 @@ import {
   Crown,
   Sparkles,
   ShieldCheck,
+  Lock,
+  ArrowUpRight,
   Infinity as InfinityIcon,
 } from 'lucide-react-native';
 import { AbaKhqrModal } from './AbaKhqrModal';
@@ -110,10 +112,12 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
   onSubscriptionUpdated,
 }) => {
   const [selectedPlan, setSelectedPlan] = useState<PlanOption | null>(null);
+  const [selectedAmount, setSelectedAmount] = useState<number>(0);
   const [checkoutVisible, setCheckoutVisible] = useState(false);
 
-  const handleSelectPlan = (plan: PlanOption) => {
+  const handleSelectPlan = (plan: PlanOption, amountToCharge: number) => {
     setSelectedPlan(plan);
+    setSelectedAmount(amountToCharge);
     setCheckoutVisible(true);
   };
 
@@ -151,9 +155,9 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
                   </Text>
                   <Text style={styles.activeSubBannerSub}>
                     {currentSubscription.daily_minute_limit
-                      ? `${currentSubscription.daily_minute_limit} minutes/day (${currentSubscription.days_remaining}d remaining)`
-                      : `Unlimited minutes/day (${currentSubscription.days_remaining}d remaining)`}
-                    {' • Choose a higher plan below to upgrade instantly.'}
+                      ? `${currentSubscription.daily_minute_limit} min/day (${currentSubscription.days_remaining}d remaining)`
+                      : `Unlimited min/day (${currentSubscription.days_remaining}d remaining)`}
+                    {' • Higher plans prorated automatically with fresh 30-day billing cycle.'}
                   </Text>
                 </View>
               </View>
@@ -162,69 +166,154 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
             {/* Plans List */}
             <ScrollView style={styles.scrollArea} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
               {PLANS_CATALOG.map((plan) => {
-                const isCurrent = currentSubscription?.plan_code === plan.code;
                 const currentPlan = PLANS_CATALOG.find((p) => p.code === currentSubscription?.plan_code);
                 const currentPrice = currentPlan ? currentPlan.price : 0;
+                const isCurrent = !!currentSubscription && currentSubscription.plan_code === plan.code;
+                const isDowngrade = !!currentSubscription && !isCurrent && plan.price < currentPrice;
+                const isUpgrade = !!currentSubscription && !isCurrent && plan.price > currentPrice;
 
-                let ctaText = `Choose ${plan.name} — $${plan.price}/mo`;
-                if (isCurrent) {
-                  ctaText = 'Current Plan (Active)';
-                } else if (currentSubscription) {
-                  ctaText = plan.price > currentPrice
-                    ? `Upgrade to ${plan.name} — $${plan.price}/mo`
-                    : `Switch to ${plan.name} — $${plan.price}/mo`;
-                }
+                // Requirement 2: Prorated upgrade math
+                // Remaining Credit = Current Plan Price * (Remaining Days / 30)
+                // Upgrade Price = New Plan Price - Remaining Credit (Fresh 30-day billing cycle)
+                const remainingDays = currentSubscription ? Math.min(30, Math.max(0, currentSubscription.days_remaining)) : 0;
+                const remainingCredit = currentSubscription
+                  ? Math.round(currentPrice * (remainingDays / 30.0) * 100) / 100
+                  : 0;
+                const upgradePrice = isUpgrade
+                  ? Math.max(0.50, Math.round((plan.price - remainingCredit) * 100) / 100)
+                  : plan.price;
 
                 return (
                   <View
                     key={plan.code}
                     style={[
                       styles.planCard,
-                      plan.code === 'PRO' && styles.popularCard,
+                      plan.code === 'PRO' && !isUpgrade && styles.popularCard,
                       isCurrent && styles.currentPlanCard,
+                      isUpgrade && styles.upgradePlanCard,
+                      isDowngrade && styles.downgradePlanCard,
                     ]}
                   >
-                    {plan.badge && (
+                    {/* Top Badges */}
+                    {isCurrent ? (
+                      <View style={[styles.badge, { backgroundColor: '#10B981' }]}>
+                        <Text style={[styles.badgeText, { color: '#FFFFFF' }]}>ACTIVE PLAN</Text>
+                      </View>
+                    ) : isDowngrade ? (
+                      <View style={[styles.badge, { backgroundColor: '#475569' }]}>
+                        <Text style={[styles.badgeText, { color: '#E2E8F0' }]}>DOWNGRADE LOCKED</Text>
+                      </View>
+                    ) : isUpgrade ? (
+                      <View style={[styles.badge, { backgroundColor: '#F59E0B' }]}>
+                        <Text style={[styles.badgeText, { color: '#0F172A' }]}>
+                          UPGRADE • SAVE ${remainingCredit.toFixed(2)}
+                        </Text>
+                      </View>
+                    ) : plan.badge ? (
                       <View style={[styles.badge, { backgroundColor: plan.badgeColor || '#38BDF8' }]}>
                         <Text style={styles.badgeText}>{plan.badge}</Text>
                       </View>
-                    )}
+                    ) : null}
 
+                    {/* Header: Plan Name, Quota, Price */}
                     <View style={styles.cardHeader}>
-                      <View>
+                      <View style={{ flex: 1 }}>
                         <Text style={styles.planName}>{plan.name}</Text>
                         <Text style={styles.dailyQuota}>{plan.dailyDisplay}</Text>
                       </View>
-                      <View style={styles.priceContainer}>
-                        <Text style={styles.priceCurrency}>$</Text>
-                        <Text style={styles.priceAmount}>{plan.price}</Text>
-                        <Text style={styles.pricePeriod}>/mo</Text>
-                      </View>
+
+                      {/* Price Display */}
+                      {isUpgrade ? (
+                        <View style={styles.upgradePriceBox}>
+                          <Text style={styles.strikethroughPrice}>${plan.price}</Text>
+                          <View style={styles.priceContainer}>
+                            <Text style={[styles.priceCurrency, { color: '#F59E0B' }]}>$</Text>
+                            <Text style={[styles.priceAmount, { color: '#F59E0B' }]}>{upgradePrice.toFixed(2)}</Text>
+                          </View>
+                          <Text style={styles.proratedLabel}>Prorated • 30 Days</Text>
+                        </View>
+                      ) : (
+                        <View style={styles.priceContainer}>
+                          <Text style={styles.priceCurrency}>$</Text>
+                          <Text style={styles.priceAmount}>{plan.price}</Text>
+                          <Text style={styles.pricePeriod}>/mo</Text>
+                        </View>
+                      )}
                     </View>
 
+                    {/* Upgrade Credit Note */}
+                    {isUpgrade && (
+                      <View style={styles.creditAppliedBanner}>
+                        <Sparkles size={14} color="#F59E0B" />
+                        <Text style={styles.creditAppliedText}>
+                          ${remainingCredit.toFixed(2)} credit from {currentPlan?.name} ({remainingDays}d left) deducted. Resets to a fresh 30-day cycle!
+                        </Text>
+                      </View>
+                    )}
+
+                    {/* Downgrade Lock Explanation */}
+                    {isDowngrade && (
+                      <View style={styles.downgradeNoticeBanner}>
+                        <Lock size={14} color="#94A3B8" />
+                        <Text style={styles.downgradeNoticeText}>
+                          Downgrades locked while your higher {currentPlan?.name} plan is active ({remainingDays}d left).
+                        </Text>
+                      </View>
+                    )}
+
+                    {/* Features List */}
                     <View style={styles.featureList}>
                       {plan.features.map((feat, idx) => (
                         <View key={idx} style={styles.featureItem}>
-                          <Check size={14} color="#10B981" style={{ marginRight: 6 }} />
-                          <Text style={styles.featureText}>{feat}</Text>
+                          <Check size={14} color={isDowngrade ? '#64748B' : '#10B981'} style={{ marginRight: 6 }} />
+                          <Text style={[styles.featureText, isDowngrade && { color: '#64748B' }]}>{feat}</Text>
                         </View>
                       ))}
                     </View>
 
-                    <TouchableOpacity
-                      style={[
-                        styles.subscribeBtn,
-                        plan.code === 'PRO' && styles.popularBtn,
-                        isCurrent && styles.activePlanBtn,
-                        !isCurrent && currentSubscription && plan.price > currentPrice && styles.upgradeBtn,
-                      ]}
-                      disabled={isCurrent}
-                      onPress={() => handleSelectPlan(plan)}
-                    >
-                      <Text style={[styles.subscribeBtnText, isCurrent && styles.activePlanBtnText]}>
-                        {ctaText}
-                      </Text>
-                    </TouchableOpacity>
+                    {/* Action Button */}
+                    {isCurrent ? (
+                      <TouchableOpacity
+                        style={[styles.subscribeBtn, styles.activePlanBtn]}
+                        disabled={true}
+                      >
+                        <Text style={[styles.subscribeBtnText, styles.activePlanBtnText]}>
+                          Current Plan (Active)
+                        </Text>
+                      </TouchableOpacity>
+                    ) : isDowngrade ? (
+                      <TouchableOpacity
+                        style={[styles.subscribeBtn, styles.downgradeLockedBtn]}
+                        disabled={true}
+                      >
+                        <Lock size={15} color="#64748B" style={{ marginRight: 6 }} />
+                        <Text style={styles.downgradeLockedBtnText}>
+                          Locked until Expiry
+                        </Text>
+                      </TouchableOpacity>
+                    ) : isUpgrade ? (
+                      <TouchableOpacity
+                        style={[styles.subscribeBtn, styles.upgradeBtn]}
+                        onPress={() => handleSelectPlan(plan, upgradePrice)}
+                      >
+                        <ArrowUpRight size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                        <Text style={styles.subscribeBtnText}>
+                          Upgrade for ${upgradePrice.toFixed(2)}
+                        </Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity
+                        style={[
+                          styles.subscribeBtn,
+                          plan.code === 'PRO' && styles.popularBtn,
+                        ]}
+                        onPress={() => handleSelectPlan(plan, plan.price)}
+                      >
+                        <Text style={styles.subscribeBtnText}>
+                          Choose {plan.name} — ${plan.price}/mo
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 );
               })}
@@ -247,7 +336,7 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
           onClose={() => setCheckoutVisible(false)}
           planCode={selectedPlan.code}
           planName={selectedPlan.name}
-          amount={selectedPlan.price}
+          amount={selectedAmount || selectedPlan.price}
           userId={userId}
           onPaymentSuccess={handlePaymentSuccess}
         />
@@ -315,6 +404,14 @@ const styles = StyleSheet.create({
   currentPlanCard: {
     borderColor: '#10B981',
   },
+  upgradePlanCard: {
+    borderColor: '#F59E0B',
+    backgroundColor: '#181611',
+  },
+  downgradePlanCard: {
+    borderColor: '#334155',
+    opacity: 0.65,
+  },
   badge: {
     position: 'absolute',
     top: -10,
@@ -364,6 +461,59 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#94A3B8',
   },
+  upgradePriceBox: {
+    alignItems: 'flex-end',
+  },
+  strikethroughPrice: {
+    fontSize: 12,
+    color: '#94A3B8',
+    textDecorationLine: 'line-through',
+    fontWeight: '600',
+  },
+  proratedLabel: {
+    fontSize: 10,
+    color: '#F59E0B',
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  creditAppliedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    marginBottom: 12,
+  },
+  creditAppliedText: {
+    color: '#FCD34D',
+    fontSize: 11,
+    fontWeight: '600',
+    flex: 1,
+    lineHeight: 15,
+  },
+  downgradeNoticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(100, 116, 139, 0.12)',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(100, 116, 139, 0.25)',
+    marginBottom: 12,
+  },
+  downgradeNoticeText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '500',
+    flex: 1,
+    lineHeight: 15,
+  },
   featureList: {
     gap: 6,
     marginBottom: 16,
@@ -398,7 +548,23 @@ const styles = StyleSheet.create({
     color: '#10B981',
   },
   upgradeBtn: {
-    backgroundColor: '#0284C7',
+    backgroundColor: '#D97706',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  downgradeLockedBtn: {
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  downgradeLockedBtnText: {
+    color: '#64748B',
+    fontSize: 13,
+    fontWeight: '700',
   },
   activeSubBanner: {
     flexDirection: 'row',

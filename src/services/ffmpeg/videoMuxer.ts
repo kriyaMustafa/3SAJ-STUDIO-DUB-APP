@@ -4,6 +4,7 @@ import { runFFmpegCommand } from './ffmpegRunner';
 export interface MuxResult {
   success: boolean;
   outputPath: string;
+  publicPath?: string;
   savedToGallery: boolean;
   error?: string;
 }
@@ -13,6 +14,7 @@ export interface MuxResult {
  * Merges video track with newly dubbed & mixed audio track using `-c:v copy -c:a aac`.
  * Maps only the video stream from input 0 and the audio stream from input 1.
  * Completely discards the original audio from input 0.
+ * Saves directly into public shared storage (Movies/3SAJ STUDIO via Android MediaStore).
  * ZERO WATERMARK guaranteed.
  */
 export async function muxVideoWithAudio(
@@ -45,20 +47,25 @@ export async function muxVideoWithAudio(
     }
 
     let savedToGallery = false;
+    let publicPath = '';
 
     if (saveToCameraRoll) {
       try {
         const { status } = await MediaLibrary.requestPermissionsAsync();
         if (status === 'granted') {
-          const asset = await MediaLibrary.createAssetAsync(outputPath);
-          // Create or save to album "3SAJ Dubbed"
-          const album = await MediaLibrary.getAlbumAsync('3SAJ Dubbed');
+          const cleanUri = outputPath.startsWith('file://') ? outputPath : `file://${outputPath}`;
+          const asset = await MediaLibrary.createAssetAsync(cleanUri);
+          const albumName = '3SAJ STUDIO';
+          const album = await MediaLibrary.getAlbumAsync(albumName);
           if (album === null) {
-            await MediaLibrary.createAlbumAsync('3SAJ Dubbed', asset, false);
+            // copyAsset: true physically copies the MP4 to public Movies/3SAJ STUDIO on Android storage!
+            await MediaLibrary.createAlbumAsync(albumName, asset, true);
           } else {
-            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+            await MediaLibrary.addAssetsToAlbumAsync([asset], album, true);
           }
           savedToGallery = true;
+          const fileName = outputPath.split('/').pop() || 'dubbed_video.mp4';
+          publicPath = `Movies/${albumName}/${fileName}`;
         }
       } catch (mediaErr) {
         console.warn('[VideoMuxer] MediaLibrary permission or save error:', mediaErr);
@@ -68,6 +75,7 @@ export async function muxVideoWithAudio(
     return {
       success: true,
       outputPath,
+      publicPath,
       savedToGallery,
     };
   } catch (err: any) {

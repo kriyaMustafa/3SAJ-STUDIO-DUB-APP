@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Alert,
   Linking,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import {
@@ -32,6 +33,7 @@ import {
   LogOut,
   CreditCard,
   Clock,
+  RefreshCw,
   Infinity as InfinityIcon,
 } from 'lucide-react-native';
 import { useProjectStore } from '../store/useProjectStore';
@@ -70,6 +72,38 @@ export default function SettingsScreen() {
   const [bgmMode, setBgmMode] = useState<BGMMode>(settings.bgmMode);
   const [demucsUrl, setDemucsUrl] = useState(settings.demucsEndpoint);
   const [backendApiUrl, setBackendApiUrl] = useState(settings.backendApiUrl || 'https://threesaj-studio-dub-app.onrender.com');
+  const [testingBackend, setTestingBackend] = useState(false);
+
+  const handleTestBackend = async () => {
+    const url = (backendApiUrl || '').trim().replace(/\/+$/, '');
+    if (!url) {
+      Alert.alert('Backend URL', 'Please enter a Backend API URL first.');
+      return;
+    }
+    setTestingBackend(true);
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const res = await fetch(`${url}/health`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        Alert.alert(
+          '✅ Connected Successfully',
+          `Backend server is online and operational!\n\nService: ${data.service || '3SAJ Unified Backend'}\nVersion: ${data.version || '2.0.0'}\nStatus: ${data.status || 'online'}`
+        );
+      } else {
+        Alert.alert('⚠️ Server Responded with Error', `Backend server returned HTTP ${res.status}.`);
+      }
+    } catch (err: any) {
+      Alert.alert(
+        '❌ Connection Failed',
+        `Could not reach backend server at:\n${url}\n\nError: ${err.message || 'Network request failed'}\n\nPlease check your internet connection or verify your Render deployment is live.`
+      );
+    } finally {
+      setTestingBackend(false);
+    }
+  };
   const [autoExport, setAutoExport] = useState(settings.autoExport);
 
   // User & Subscription state
@@ -684,6 +718,20 @@ export default function SettingsScreen() {
           <Text style={styles.helperText}>
             Points to your 3SAJ backend server (e.g. https://threesaj-studio-dub-app.onrender.com).
           </Text>
+          <TouchableOpacity
+            style={styles.testBackendBtn}
+            onPress={handleTestBackend}
+            disabled={testingBackend}
+          >
+            {testingBackend ? (
+              <ActivityIndicator size="small" color="#38BDF8" />
+            ) : (
+              <>
+                <RefreshCw size={14} color="#38BDF8" style={{ marginRight: 6 }} />
+                <Text style={styles.testBackendBtnText}>Test Backend Connection</Text>
+              </>
+            )}
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -1133,6 +1181,23 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontSize: 10,
     marginTop: 4,
+  },
+  testBackendBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 8,
+  },
+  testBackendBtnText: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: '600',
   },
   switchRow: {
     flexDirection: 'row',

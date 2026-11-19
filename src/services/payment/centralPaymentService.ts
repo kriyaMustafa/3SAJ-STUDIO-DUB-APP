@@ -42,12 +42,13 @@ export class CentralPaymentClient {
    * Keeps secret API keys strictly on the server.
    */
   async createPayment(params: PaymentInitParams): Promise<PaymentSessionResponse> {
-    const token = await authService.getAccessToken();
+    const token = await authService.getValidAccessToken();
     const deviceId = await authService.getDeviceId();
     const deviceName = await authService.getDeviceName();
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'X-Device-Id': deviceId,
     };
     if (token) {
       headers.Authorization = `Bearer ${token}`;
@@ -66,6 +67,22 @@ export class CentralPaymentClient {
           platform: Platform.OS,
         }),
       });
+
+      // If token is invalid or expired (401), clean stale tokens and retry with persistent device session
+      if (response.status === 401 && token) {
+        await authService.clearTokens();
+        delete headers.Authorization;
+        response = await fetch(`${backendUrl}/api/subscriptions/checkout`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            plan_code: params.planCode,
+            device_id: deviceId,
+            device_name: deviceName,
+            platform: Platform.OS,
+          }),
+        });
+      }
     } catch (netErr: any) {
       throw new Error(`Could not connect to backend server at ${backendUrl}. Please check your internet connection or backend server status.`);
     }
@@ -117,11 +134,14 @@ export class CentralPaymentClient {
   ): Promise<PaymentStatusResponse> {
     const startTime = Date.now();
     const timeoutMs = maxWaitSeconds * 1000;
-    const token = await authService.getAccessToken();
+    const token = await authService.getValidAccessToken();
+    const deviceId = await authService.getDeviceId();
 
     while (Date.now() - startTime < timeoutMs) {
       try {
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = {
+          'X-Device-Id': deviceId,
+        };
         if (token) {
           headers.Authorization = `Bearer ${token}`;
         }

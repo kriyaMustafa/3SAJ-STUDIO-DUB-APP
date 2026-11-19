@@ -7,6 +7,8 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  Share,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -100,10 +102,48 @@ export default function EditorScreen() {
           text: 'Render & Export',
           onPress: async () => {
             const res = await exportFinalVideo();
-            if (res.success) {
+            if (res.success && res.path) {
+              const videoPath = res.path;
+              const displayPublic = (res as any).publicPath || 'Movies/3SAJ STUDIO';
               Alert.alert(
-                'Export Complete!',
-                `Video rendered with zero watermarks and saved to your camera roll:\n${res.path}`
+                '🎉 Export Complete!',
+                `Video rendered with zero watermarks and saved to your phone's Gallery & File Manager:\n\n📁 ${displayPublic}\n\nInternal file:\n${videoPath}`,
+                [
+                  { text: 'Done', style: 'cancel' },
+                  {
+                    text: 'Share / Send',
+                    onPress: async () => {
+                      try {
+                        await Share.share({
+                          title: '3SAJ Studio Dubbed Video',
+                          message: `Khmer dubbed video: ${videoPath}`,
+                          url: videoPath,
+                        });
+                      } catch (e) {
+                        console.warn('Share error:', e);
+                      }
+                    },
+                  },
+                  {
+                    text: 'Open Video',
+                    onPress: async () => {
+                      try {
+                        const canOpen = await Linking.canOpenURL(videoPath);
+                        if (canOpen) {
+                          await Linking.openURL(videoPath);
+                        } else {
+                          await Share.share({
+                            title: '3SAJ Studio Dubbed Video',
+                            message: videoPath,
+                            url: videoPath,
+                          });
+                        }
+                      } catch (e) {
+                        console.warn('Open error:', e);
+                      }
+                    },
+                  },
+                ]
               );
             } else {
               Alert.alert('Export Failed', res.error || 'Unknown rendering error.');

@@ -44,8 +44,8 @@ def get_user_active_subscription(conn, user_id: str) -> Optional[Dict[str, Any]]
             return None
 
         now_utc = datetime.datetime.now(datetime.timezone.utc)
-        diff_ms = (sub["expires_at"] - now_utc).total_seconds()
-        days_remaining = max(0, int(diff_ms // 86400))
+        diff_ms = max(0.0, (sub["expires_at"] - now_utc).total_seconds())
+        days_remaining = min(30, max(0, int(round(diff_ms / 86400.0))))
         hours_remaining = max(0, int((diff_ms % 86400) // 3600))
 
         return {
@@ -59,6 +59,91 @@ def get_user_active_subscription(conn, user_id: str) -> Optional[Dict[str, Any]]
             "days_remaining": days_remaining,
             "hours_remaining": hours_remaining,
             "is_unlimited": sub["daily_minute_limit"] is None
+        }
+
+def calculate_upgrade_proration(
+    current_sub: Optional[Dict[str, Any]],
+    target_plan_price: float,
+    now: Optional[datetime.datetime] = None
+) -> Dict[str, Any]:
+    """
+    Calculates prorated upgrade pricing and detects downgrades.
+    Formula:
+      Remaining Days = min(30, max(0, round((expires_at - now).total_seconds() / 86400.0)))
+      Remaining Credit = round(Current Plan Price * (Remaining Days / 30.0), 2)
+      Upgrade Price = round(max(0.50, New Plan Price - Remaining Credit), 2)
+    Downgrade rule:
+      If target_plan_price < current_plan_price and current_sub is ACTIVE, downgrade is blocked!
+    """
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+    if not current_sub:
+        return {
+            "is_active": False,
+            "is_upgrade": False,
+            "is_downgrade": False,
+            "is_same_plan": False,
+            "remaining_days": 0,
+            "remaining_credit": 0.0,
+            "final_price": round(target_plan_price, 2)
+        }
+
+    current_price = float(current_sub.get("price_usd") or 0.0)
+
+    # Check expiration
+    expires_at = current_sub.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at_dt = datetime.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    else:
+        expires_at_dt = expires_at
+
+    diff_sec = max(0.0, (expires_at_dt - now).total_seconds()) if expires_at_dt else 0.0
+    if diff_sec <= 0:
+        return {
+            "is_active": False,
+            "is_upgrade": False,
+            "is_downgrade": False,
+            "is_same_plan": False,
+            "remaining_days": 0,
+            "remaining_credit": 0.0,
+            "final_price": round(target_plan_price, 2)
+        }
+
+    remaining_days = min(30, max(0, int(round(diff_sec / 86400.0))))
+    remaining_credit = round(current_price * (remaining_days / 30.0), 2)
+
+    if target_plan_price < current_price:
+        return {
+            "is_active": True,
+            "is_upgrade": False,
+            "is_downgrade": True,
+            "is_same_plan": False,
+            "remaining_days": remaining_days,
+            "remaining_credit": remaining_credit,
+            "final_price": round(target_plan_price, 2),
+            "blocked_reason": f"Plan downgrades are locked until your current {current_sub.get('plan_name')} expires."
+        }
+    elif target_plan_price > current_price:
+        upgrade_price = round(max(0.50, target_plan_price - remaining_credit), 2)
+        return {
+            "is_active": True,
+            "is_upgrade": True,
+            "is_downgrade": False,
+            "is_same_plan": False,
+            "remaining_days": remaining_days,
+            "remaining_credit": remaining_credit,
+            "final_price": upgrade_price
+        }
+    else:
+        return {
+            "is_active": True,
+            "is_upgrade": False,
+            "is_downgrade": False,
+            "is_same_plan": True,
+            "remaining_days": remaining_days,
+            "remaining_credit": 0.0,
+            "final_price": round(target_plan_price, 2)
         }
 
 def get_user_today_usage(conn, user_id: str) -> Dict[str, Any]:

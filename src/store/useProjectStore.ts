@@ -727,7 +727,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         await dbSaveProject(updatedProj);
         set({ activeProject: updatedProj, isExporting: false });
         await get().loadProjects();
-        return { success: true, path: muxResult.outputPath };
+        return {
+          success: true,
+          path: muxResult.outputPath,
+          publicPath: muxResult.publicPath || `Movies/3SAJ STUDIO/${outputFileName}`,
+          savedToGallery: muxResult.savedToGallery,
+        };
       } else {
         set({ isExporting: false });
         return { success: false, error: muxResult.error };

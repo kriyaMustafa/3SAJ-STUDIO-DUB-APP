@@ -38,7 +38,8 @@ from usage import (
     get_user_active_subscription,
     get_user_today_usage,
     check_and_reserve_quota,
-    commit_quota_deduction
+    commit_quota_deduction,
+    calculate_upgrade_proration
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -524,13 +525,49 @@ def revoke_remote_device(req: RevokeDeviceRequest, current=Depends(get_current_u
 # ==============================================================================
 
 @app.get("/api/plans")
-def list_plans():
-    """Lists available subscription plans."""
+def list_plans(authorization: Optional[str] = Header(None)):
+    """Lists available subscription plans with prorated upgrade quotes and downgrade locks."""
+    user_id = None
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            token = authorization.split(" ")[1]
+            payload = verify_token(token, expected_type="access")
+            user_id = payload.get("sub")
+        except Exception:
+            pass
+
     with get_db_connection() as conn:
+        current_sub = get_user_active_subscription(conn, user_id) if user_id else None
         with conn.cursor() as cur:
             cur.execute("SELECT code, name, price_usd, daily_minute_limit, max_devices FROM plans ORDER BY price_usd ASC;")
             rows = cur.fetchall()
-    return {"plans": rows}
+
+    enriched_plans = []
+    for r in rows:
+        plan_price = float(r["price_usd"])
+        proration = calculate_upgrade_proration(current_sub, plan_price)
+        is_cur = bool(current_sub and current_sub["plan_code"] == r["code"])
+
+        enriched_plans.append({
+            "code": r["code"],
+            "name": r["name"],
+            "price_usd": plan_price,
+            "daily_minute_limit": r["daily_minute_limit"],
+            "max_devices": r["max_devices"],
+            "is_current": is_cur,
+            "is_upgrade": proration["is_upgrade"],
+            "is_downgrade": proration["is_downgrade"],
+            "can_select": not is_cur and not proration["is_downgrade"],
+            "final_price": proration["final_price"] if proration["is_upgrade"] else plan_price,
+            "remaining_credit": proration["remaining_credit"],
+            "remaining_days": proration["remaining_days"],
+            "blocked_reason": proration.get("blocked_reason")
+        })
+
+    return {
+        "plans": enriched_plans,
+        "current_subscription": current_sub
+    }
 
 @app.get("/api/subscriptions/current")
 def get_current_subscription(current=Depends(get_current_user_and_device)):
@@ -553,7 +590,7 @@ def create_subscription_checkout(
 ):
     """
     Creates an ABA KHQR payment session via Central Payment API.
-    Supports both logged-in users and anonymous/guest users seamlessly.
+    Enforces prorated upgrade pricing and blocks plan downgrades until expiration.
     Returns dynamic KHQR QR string, QR base64 image, and ABA Mobile app deeplink.
     """
     user_id = None
@@ -573,7 +610,6 @@ def create_subscription_checkout(
             # If not authenticated, bind or create persistent guest user based on device_id
             if not user_id:
                 clean_device_id = req.device_id or f"guest_dev_{uuid.uuid4().hex[:12]}"
-                # Check if device is already registered
                 cur.execute(
                     "SELECT user_id FROM user_devices WHERE device_id = %s AND is_active = TRUE ORDER BY last_active_at DESC LIMIT 1;",
                     (clean_device_id,)
@@ -597,7 +633,6 @@ def create_subscription_checkout(
                     )
                     user_info = cur.fetchone()
 
-                # Generate access tokens for this device
                 tokens = create_tokens(user_id, user_info["email"] if user_info else f"guest_{clean_device_id[:8]}", clean_device_id)
                 register_device_session(
                     conn=conn,
@@ -608,13 +643,30 @@ def create_subscription_checkout(
                     refresh_token=tokens["refresh_token"]
                 )
 
+            # Query target plan
             plan_code = req.plan_code.upper().strip()
             cur.execute("SELECT code, name, price_usd FROM plans WHERE code = %s;", (plan_code,))
             plan = cur.fetchone()
             if not plan:
                 raise HTTPException(status_code=404, detail=f"Plan '{plan_code}' not found")
 
-            amount = float(plan["price_usd"])
+            # Check active subscription and calculate prorated upgrade or block downgrade
+            current_sub = get_user_active_subscription(conn, user_id)
+            proration = calculate_upgrade_proration(current_sub, float(plan["price_usd"]))
+
+            # REQUIREMENT 3: Block Plan Downgrades Until Expiration
+            if proration["is_downgrade"]:
+                expiry_display = current_sub["expires_at"][:10] if current_sub and current_sub.get("expires_at") else "expiration"
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Plan downgrades are not permitted while your current {current_sub['plan_name']} plan is active. Please wait until your subscription expires on {expiry_display}."
+                )
+
+            # REQUIREMENT 2: Prorated Upgrade Pricing
+            amount = float(proration["final_price"])
+            is_upgrade = bool(proration["is_upgrade"])
+            remaining_credit = float(proration["remaining_credit"])
+            remaining_days = int(proration["remaining_days"])
 
     # Call Central Payment API (reusing existing central payment server)
     try:
@@ -628,13 +680,42 @@ def create_subscription_checkout(
         logger.error(f"Failed to initiate central payment: {e}")
         raise HTTPException(status_code=502, detail=f"Central payment gateway error: {str(e)}")
 
+    payment_id = payment_data.get("payment_id") or payment_data.get("id")
+
+    # Authoritatively record target plan_code, upgrade status, and credit in payments table
+    meta_json = json.dumps({
+        "channel": "mobile_app",
+        "app_code": "STUDIO_APP",
+        "plan_code": plan_code,
+        "plan_title": plan["name"],
+        "user_id": user_id,
+        "is_upgrade": is_upgrade,
+        "remaining_credit": remaining_credit,
+        "upgrade_price": amount
+    })
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE payments
+                SET extra_metadata = %s::json
+                WHERE id = %s OR transaction_id = %s;
+                """,
+                (meta_json, payment_id, payment_id)
+            )
+            conn.commit()
+
     resp = {
-        "payment_id": payment_data.get("payment_id") or payment_data.get("id"),
+        "payment_id": payment_id,
         "transaction_id": payment_data.get("transaction_id"),
         "amount": amount,
         "currency": "USD",
         "plan_code": plan_code,
         "plan_name": plan["name"],
+        "is_upgrade": is_upgrade,
+        "remaining_credit": remaining_credit,
+        "remaining_days": remaining_days,
         "qr_string": payment_data.get("qr_string"),
         "qr_image": payment_data.get("qr_image"),
         "abapay_deeplink": payment_data.get("abapay_deeplink"),
@@ -660,6 +741,7 @@ def verify_and_activate_subscription(
     """
     Polls Central Payment API for payment status.
     If PAID, immediately activates 30-day subscription for the user in PostgreSQL.
+    Accurately switches active plan to the new tier and resets billing cycle to fresh 30 days.
     """
     user_id = None
     if authorization and authorization.startswith("Bearer "):
@@ -677,45 +759,52 @@ def verify_and_activate_subscription(
     if raw_status in ("PAID", "COMPLETED"):
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                if not user_id:
-                    # Look up customer_reference from payments table or Central Payment response
-                    cur.execute(
-                        "SELECT customer_reference FROM payments WHERE id = %s OR transaction_id = %s;",
-                        (payment_id, payment_id)
-                    )
-                    pay_row = cur.fetchone()
-                    if pay_row and pay_row["customer_reference"]:
-                        user_id = pay_row["customer_reference"]
+                # 1. Retrieve authoritative payment row from PostgreSQL payments table
+                cur.execute(
+                    "SELECT id, amount, extra_metadata, customer_reference FROM payments WHERE id = %s OR transaction_id = %s;",
+                    (payment_id, payment_id)
+                )
+                pay_row = cur.fetchone()
+
+                target_user_id = user_id
+                if not target_user_id:
+                    if pay_row and pay_row.get("customer_reference"):
+                        target_user_id = pay_row["customer_reference"]
                     else:
-                        user_id = payment_status.get("customer_reference")
+                        target_user_id = payment_status.get("customer_reference")
 
-            if not user_id:
-                raise HTTPException(status_code=400, detail="Cannot associate payment with a user account")
+                if not target_user_id:
+                    raise HTTPException(status_code=400, detail="Cannot associate payment with a user account")
 
-            # Extract plan_code from metadata, or accurately resolve from payment amount
-            metadata = payment_status.get("metadata") or {}
-            plan_code = metadata.get("plan_code")
-            if not plan_code and payment_status.get("amount") is not None:
-                amt = float(payment_status["amount"])
-                if amt >= 14.0:
-                    plan_code = "UNLIMITED"
-                elif amt >= 9.5:
-                    plan_code = "PRO_MAX"
-                elif amt >= 7.5:
-                    plan_code = "PRO"
-                elif amt >= 4.5:
-                    plan_code = "FLASH"
-            if not plan_code:
-                plan_code = "PRO"
+                # 2. Retrieve authoritative plan_code from payments.extra_metadata!
+                resolved_plan_code = None
+                if pay_row and pay_row.get("extra_metadata"):
+                    meta = pay_row["extra_metadata"]
+                    if isinstance(meta, str):
+                        try:
+                            import json
+                            meta = json.loads(meta)
+                        except Exception:
+                            meta = {}
+                    if isinstance(meta, dict) and meta.get("plan_code"):
+                        resolved_plan_code = str(meta["plan_code"]).upper().strip()
 
-            # Activate subscription
+                if not resolved_plan_code:
+                    meta = payment_status.get("metadata") or {}
+                    if isinstance(meta, dict) and meta.get("plan_code"):
+                        resolved_plan_code = str(meta["plan_code"]).upper().strip()
+
+                if not resolved_plan_code:
+                    resolved_plan_code = "PRO"
+
+            # 3. Activate subscription with authoritative plan code
             activation_result = activate_paid_subscription(
                 conn=conn,
                 payment_id=payment_id,
-                user_id=user_id,
-                plan_code=plan_code
+                user_id=target_user_id,
+                plan_code=resolved_plan_code
             )
-            current_sub = get_user_active_subscription(conn, user_id)
+            current_sub = get_user_active_subscription(conn, target_user_id)
 
         return {
             "success": True,

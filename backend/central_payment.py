@@ -139,13 +139,22 @@ def activate_paid_subscription(conn, payment_id: str, user_id: str, plan_code: s
                 cur.execute(
                     """
                     UPDATE subscriptions
-                    SET plan_code = %s, updated_at = NOW()
+                    SET plan_code = %s, status = 'ACTIVE', updated_at = NOW()
                     WHERE id = %s
                     RETURNING id, user_id, plan_code, payment_id, status, started_at, expires_at;
                     """,
                     (real_plan_code, existing_sub["id"])
                 )
                 existing_sub = cur.fetchone()
+                # Supersede other older active subscriptions for this user
+                cur.execute(
+                    """
+                    UPDATE subscriptions
+                    SET status = 'UPGRADED', updated_at = NOW()
+                    WHERE user_id = %s AND id != %s AND status = 'ACTIVE';
+                    """,
+                    (user_id, existing_sub["id"])
+                )
                 conn.commit()
             return {
                 "activated": True,

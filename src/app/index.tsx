@@ -190,14 +190,14 @@ export default function ProjectDashboardScreen() {
     <SafeAreaView style={styles.safeArea}>
       {/* Top Header */}
       <View style={styles.header}>
-        <View>
-          <Text style={styles.appTitle}>3SAJ STUDIO</Text>
-          <Text style={styles.appSubtitle}>
+        <View style={styles.headerLeft}>
+          <Text style={styles.appTitle} numberOfLines={1}>3SAJ STUDIO</Text>
+          <Text style={styles.appSubtitle} numberOfLines={1}>
             Khmer AI Donghua & Drama Dubbing
           </Text>
         </View>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <View style={styles.headerRight}>
           {licenseInfo?.isValid && licenseInfo.license ? (
             <TouchableOpacity
               style={[
@@ -226,18 +226,50 @@ export default function ProjectDashboardScreen() {
               onPress={() => setPricingModalVisible(true)}
             >
               <CreditCard size={13} color="#FFF" style={{ marginRight: 4 }} />
-              <Text style={styles.headerBuyBtnText}>Buy Plan (ABA QR)</Text>
+              <Text style={styles.headerBuyBtnText}>Buy Plan</Text>
             </TouchableOpacity>
           )}
 
           <TouchableOpacity
             style={styles.settingsBtn}
             onPress={() => router.push('/settings')}
+            accessibilityLabel="Settings & API Keys"
           >
-            <SettingsIcon size={22} color="#F8FAFC" />
+            <SettingsIcon size={20} color="#F8FAFC" />
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Dedicated Settings & API Keys Button (Phone accessible navigation) */}
+      <TouchableOpacity
+        style={styles.settingsNavCard}
+        onPress={() => router.push('/settings')}
+        activeOpacity={0.85}
+      >
+        <View style={styles.settingsNavCardLeft}>
+          <View style={styles.settingsNavIconBox}>
+            <SettingsIcon size={18} color="#38BDF8" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={styles.settingsNavTitle}>Settings & API Keys</Text>
+              {currentUser?.email ? (
+                <View style={styles.loggedInBadge}>
+                  <Text style={styles.loggedInBadgeText}>Signed In</Text>
+                </View>
+              ) : null}
+            </View>
+            <Text style={styles.settingsNavSubtitle} numberOfLines={1}>
+              {currentUser?.email
+                ? `${currentUser.email} • Manage Plan & Keys`
+                : 'Account Sign In • Plans & Quotas • AI Models (Gemini/Claude)'}
+            </Text>
+          </View>
+        </View>
+        <View style={styles.settingsNavArrow}>
+          <Text style={styles.settingsNavArrowText}>Open ⚙️</Text>
+        </View>
+      </TouchableOpacity>
 
       {/* Prominent Buy with ABA QR Banner when no active plan */}
       {(!licenseInfo?.isValid || !licenseInfo.license) && (
@@ -522,22 +554,37 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
   },
+  headerLeft: {
+    flex: 1,
+    marginRight: 8,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
   appTitle: {
     color: '#F8FAFC',
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '900',
-    letterSpacing: 1,
+    letterSpacing: 0.5,
   },
   appSubtitle: {
     color: '#38BDF8',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     marginTop: 2,
   },
   settingsBtn: {
-    padding: 8,
-    borderRadius: 8,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
     backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
   },
   headerPlanBadge: {
     flexDirection: 'row',
@@ -557,13 +604,77 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#005F73',
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
     borderRadius: 8,
   },
   headerBuyBtnText: {
     color: '#FFF',
-    fontSize: 12,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  settingsNavCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1E293B',
+    marginHorizontal: 16,
+    marginTop: 10,
+    marginBottom: 4,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  settingsNavCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    marginRight: 8,
+  },
+  settingsNavIconBox: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  settingsNavTitle: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  settingsNavSubtitle: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 1,
+  },
+  settingsNavArrow: {
+    backgroundColor: '#0F172A',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  settingsNavArrowText: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  loggedInBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  loggedInBadgeText: {
+    color: '#10B981',
+    fontSize: 9,
     fontWeight: '700',
   },
   subscribeBanner: {

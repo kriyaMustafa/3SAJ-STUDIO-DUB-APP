@@ -126,6 +126,79 @@ export class AuthService {
     }
   }
 
+  /**
+   * Refreshes access tokens using stored refresh_token.
+   */
+  async refreshTokens(): Promise<string | null> {
+    try {
+      const refreshToken = await this.getRefreshToken();
+      const deviceId = await this.getDeviceId();
+      if (!refreshToken || !deviceId) {
+        return null;
+      }
+
+      const res = await fetch(`${this.backendBaseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          refresh_token: refreshToken,
+          device_id: deviceId,
+        }),
+      });
+
+      if (!res.ok) {
+        return null;
+      }
+
+      const data = await res.json();
+      if (data.tokens) {
+        await this.storeTokens(data.tokens);
+        return data.tokens.access_token;
+      }
+      return null;
+    } catch (e) {
+      console.warn('Failed refreshing tokens:', e);
+      return null;
+    }
+  }
+
+  /**
+   * Returns a guaranteed valid access token, auto-refreshing if expired or about to expire.
+   */
+  async getValidAccessToken(): Promise<string | null> {
+    const token = await this.getAccessToken();
+    if (!token) return null;
+
+    try {
+      const parts = token.split('.');
+      if (parts.length === 3) {
+        let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        while (b64.length % 4 !== 0) b64 += '=';
+
+        let decoded = '';
+        if (typeof atob === 'function') {
+          decoded = atob(b64);
+        } else if (typeof Buffer !== 'undefined') {
+          decoded = Buffer.from(b64, 'base64').toString('utf8');
+        }
+        if (decoded) {
+          const payload = JSON.parse(decoded);
+          const exp = payload.exp;
+          const now = Math.floor(Date.now() / 1000);
+          if (exp && exp - now < 60) {
+            const refreshed = await this.refreshTokens();
+            if (refreshed) return refreshed;
+          }
+        }
+      }
+    } catch {
+      const refreshed = await this.refreshTokens();
+      if (refreshed) return refreshed;
+    }
+
+    return token;
+  }
+
   async storeTokens(tokens: AuthTokens): Promise<void> {
     try {
       await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, tokens.access_token).catch(() => {});
