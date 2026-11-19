@@ -273,7 +273,16 @@ export default function SettingsScreen() {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={true}
+      nestedScrollEnabled={true}
+      keyboardShouldPersistTaps="handled"
+      bounces={true}
+      overScrollMode="always"
+      scrollEventThrottle={16}
+    >
       {/* SECTION 0: ACCOUNT & DEVICE MANAGEMENT */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
@@ -823,7 +832,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
-    paddingBottom: 40,
+    paddingBottom: 80,
     gap: 18,
   },
   section: {

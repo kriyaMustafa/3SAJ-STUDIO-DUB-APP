@@ -7,6 +7,8 @@ import {
   ScrollView,
   StyleSheet,
   Alert,
+  useWindowDimensions,
+  Platform,
 } from 'react-native';
 import {
   X,
@@ -112,6 +114,7 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
   currentSubscription,
   onSubscriptionUpdated,
 }) => {
+  const { height: screenHeight, width: screenWidth } = useWindowDimensions();
   const [selectedPlan, setSelectedPlan] = useState<PlanOption | null>(null);
   const [selectedAmount, setSelectedAmount] = useState<number>(0);
   const [checkoutVisible, setCheckoutVisible] = useState(false);
@@ -135,18 +138,47 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
     onClose();
   };
 
+  // Compute responsive bounded modal height (e.g. 88% on phones, up to 860px on tablets)
+  const modalContainerHeight = Math.min(screenHeight * 0.88, 860);
+  const modalContainerWidth = Math.min(screenWidth * 0.94, 680);
+
   return (
     <>
-      <Modal visible={visible && !checkoutVisible} transparent animationType="slide" onRequestClose={onClose}>
+      <Modal
+        visible={visible && !checkoutVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={onClose}
+        statusBarTranslucent
+      >
         <View style={styles.overlay}>
-          <View style={styles.container}>
+          {/* Touchable backdrop so tapping outside container closes modal */}
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={onClose}
+          />
+
+          <View
+            style={[
+              styles.container,
+              {
+                height: modalContainerHeight,
+                maxWidth: modalContainerWidth,
+              },
+            ]}
+          >
             {/* Header */}
             <View style={styles.header}>
-              <View>
+              <View style={{ flex: 1, paddingRight: 10 }}>
                 <Text style={styles.title}>3SAJ Studio Plans</Text>
                 <Text style={styles.subtitle}>Select a plan to unlock Khmer video dubbing & translation</Text>
               </View>
-              <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+              <TouchableOpacity
+                onPress={onClose}
+                style={styles.closeBtn}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
                 <X size={22} color="#94A3B8" />
               </TouchableOpacity>
             </View>
@@ -171,8 +203,17 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
               </View>
             )}
 
-            {/* Plans List */}
-            <ScrollView style={styles.scrollArea} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+            {/* Plans List with guaranteed working vertical scroll */}
+            <ScrollView
+              style={styles.scrollArea}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={true}
+              nestedScrollEnabled={true}
+              keyboardShouldPersistTaps="handled"
+              bounces={true}
+              overScrollMode="always"
+              scrollEventThrottle={16}
+            >
               {PLANS_CATALOG.map((plan) => {
                 const currentPlan = PLANS_CATALOG.find((p) => p.code === currentSubscription?.plan_code);
                 const currentPrice = currentPlan ? currentPlan.price : 0;
@@ -358,22 +399,24 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.75)',
     justifyContent: 'flex-end',
+    alignItems: 'center',
   },
   container: {
-    maxHeight: '90%',
+    width: '100%',
     backgroundColor: '#0F172A',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    paddingTop: 20,
+    paddingTop: 16,
     borderWidth: 1,
     borderColor: '#1E293B',
+    overflow: 'hidden',
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     paddingHorizontal: 20,
-    paddingBottom: 16,
+    paddingBottom: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
   },
@@ -388,14 +431,17 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   closeBtn: {
-    padding: 4,
+    padding: 6,
   },
   scrollArea: {
-    paddingHorizontal: 20,
+    flex: 1,
+    width: '100%',
   },
   scrollContent: {
-    paddingVertical: 16,
-    gap: 14,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 60,
+    gap: 16,
   },
   planCard: {
     backgroundColor: '#1E293B',

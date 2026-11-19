@@ -9,6 +9,7 @@ import {
   Image,
   Alert,
   Platform,
+  ScrollView,
 } from 'react-native';
 import {
   X,
@@ -215,7 +216,12 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
               </Text>
             </View>
           ) : (
-            <View style={styles.content}>
+            <ScrollView
+              style={{ maxHeight: 520 }}
+              contentContainerStyle={{ paddingBottom: 10 }}
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled={true}
+            >
               {/* Plan & Amount Summary */}
               <View style={styles.amountCard}>
                 <View>
@@ -264,7 +270,7 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
               <Text style={styles.hintText}>
                 Open your ABA Mobile App, tap KHQR, and scan the QR code above.
               </Text>
-            </View>
+            </ScrollView>
           )}
         </View>
       </View>
