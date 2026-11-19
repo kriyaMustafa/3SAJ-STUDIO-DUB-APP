@@ -63,9 +63,30 @@ export const DEFAULT_BACKEND_URL = 'https://threesaj-studio-dub-app.onrender.com
 
 export class AuthService {
   private backendBaseUrl: string;
+  private authListeners: Array<(user: UserProfile | null, sub: SubscriptionInfo | null) => void> = [];
 
   constructor(backendBaseUrl: string = DEFAULT_BACKEND_URL) {
     this.backendBaseUrl = backendBaseUrl.replace(/\/$/, '');
+  }
+
+  /**
+   * Subscribes to real-time authentication state changes (sign in, sign out, profile refresh).
+   */
+  onAuthStateChanged(listener: (user: UserProfile | null, sub: SubscriptionInfo | null) => void) {
+    this.authListeners.push(listener);
+    return () => {
+      this.authListeners = this.authListeners.filter((l) => l !== listener);
+    };
+  }
+
+  notifyAuthChange(user: UserProfile | null, sub: SubscriptionInfo | null) {
+    for (const listener of this.authListeners) {
+      try {
+        listener(user, sub);
+      } catch (e) {
+        console.warn('Auth listener error:', e);
+      }
+    }
   }
 
   setBackendUrl(url: string) {
@@ -212,18 +233,24 @@ export class AuthService {
 
   async clearTokens(): Promise<void> {
     try {
-      await SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY).catch(() => {});
-      await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY).catch(() => {});
-      await AsyncStorage.removeItem(ACCESS_TOKEN_KEY);
-      await AsyncStorage.removeItem(REFRESH_TOKEN_KEY);
-      await AsyncStorage.removeItem(USER_PROFILE_KEY);
+      await Promise.all([
+        SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY).catch(() => {}),
+        SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY).catch(() => {}),
+        SecureStore.deleteItemAsync(USER_PROFILE_KEY).catch(() => {}),
+        AsyncStorage.removeItem(ACCESS_TOKEN_KEY).catch(() => {}),
+        AsyncStorage.removeItem(REFRESH_TOKEN_KEY).catch(() => {}),
+        AsyncStorage.removeItem(USER_PROFILE_KEY).catch(() => {}),
+      ]);
+      this.notifyAuthChange(null, null);
     } catch (e) {
       console.warn('Failed clearing tokens:', e);
+      this.notifyAuthChange(null, null);
     }
   }
 
-  async storeUserProfile(user: UserProfile): Promise<void> {
+  async storeUserProfile(user: UserProfile, sub: SubscriptionInfo | null = null): Promise<void> {
     await AsyncStorage.setItem(USER_PROFILE_KEY, JSON.stringify(user));
+    this.notifyAuthChange(user, sub);
   }
 
   async getStoredUserProfile(): Promise<UserProfile | null> {

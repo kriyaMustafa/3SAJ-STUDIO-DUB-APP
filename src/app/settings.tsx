@@ -41,7 +41,7 @@ import { getApiKey, setApiKey } from '../services/secureStorage';
 import { SubscriptionPricingModal } from '../components/modals/SubscriptionPricingModal';
 import { AuthModal } from '../components/modals/AuthModal';
 import { DeviceManagementModal } from '../components/modals/DeviceManagementModal';
-import { checkAppLicense, getDailyUsage } from '../services/licenseService';
+import { checkAppLicense, getDailyUsage, removeLicense } from '../services/licenseService';
 import { authService, UserProfile, SubscriptionInfo } from '../services/api/authService';
 import { LicenseStatus, DailyUsageData, TIER_CONFIGS } from '../types/license';
 import {
@@ -122,16 +122,24 @@ export default function SettingsScreen() {
       if (settings.backendApiUrl) {
         authService.setBackendUrl(settings.backendApiUrl);
       }
-      const profileData = await authService.getCurrentProfile();
-      if (profileData) {
-        setCurrentUser(profileData.user);
-        setCurrentSub(profileData.subscription);
+      const token = await authService.getAccessToken();
+      if (!token) {
+        setCurrentUser(null);
+        setCurrentSub(null);
       } else {
-        const cachedUser = await authService.getStoredUserProfile();
-        setCurrentUser(cachedUser);
+        const profileData = await authService.getCurrentProfile();
+        if (profileData) {
+          setCurrentUser(profileData.user);
+          setCurrentSub(profileData.subscription);
+        } else {
+          setCurrentUser(null);
+          setCurrentSub(null);
+        }
       }
     } catch (e) {
       console.warn('Failed refreshing profile:', e);
+      setCurrentUser(null);
+      setCurrentSub(null);
     }
 
     const status = await checkAppLicense();
@@ -139,11 +147,25 @@ export default function SettingsScreen() {
     if (status.license) {
       const usage = await getDailyUsage(status.license.dailyLimitSeconds);
       setDailyUsage(usage);
+    } else {
+      setDailyUsage(null);
     }
   };
 
   useEffect(() => {
     refreshProfileAndSubscription();
+    // Subscribe to auth state changes so UI updates immediately when signing in or signing out
+    const unsub = authService.onAuthStateChanged((user, sub) => {
+      setCurrentUser(user);
+      if (sub !== undefined) {
+        setCurrentSub(sub);
+      }
+      if (!user) {
+        setLicenseStatus(null);
+        setDailyUsage(null);
+      }
+    });
+    return unsub;
   }, []);
 
   useEffect(() => {
@@ -189,9 +211,13 @@ export default function SettingsScreen() {
         style: 'destructive',
         onPress: async () => {
           await authService.logout();
+          await removeLicense();
           setCurrentUser(null);
           setCurrentSub(null);
-          refreshProfileAndSubscription();
+          setLicenseStatus(null);
+          setDailyUsage(null);
+          await refreshProfileAndSubscription();
+          Alert.alert('Signed Out', 'You have been successfully signed out.');
         },
       },
     ]);

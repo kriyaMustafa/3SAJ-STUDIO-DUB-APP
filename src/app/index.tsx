@@ -11,7 +11,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import {
   Plus,
@@ -65,19 +65,49 @@ export default function ProjectDashboardScreen() {
       if (settings?.backendApiUrl) {
         authService.setBackendUrl(settings.backendApiUrl);
       }
-      const profile = await authService.getCurrentProfile();
-      if (profile) {
-        setCurrentUser(profile.user);
-        setCurrentSub(profile.subscription);
+      const token = await authService.getAccessToken();
+      if (!token) {
+        setCurrentUser(null);
+        setCurrentSub(null);
+      } else {
+        const profile = await authService.getCurrentProfile();
+        if (profile) {
+          setCurrentUser(profile.user);
+          setCurrentSub(profile.subscription);
+        } else {
+          setCurrentUser(null);
+          setCurrentSub(null);
+        }
       }
-    } catch (_) {}
+    } catch (_) {
+      setCurrentUser(null);
+      setCurrentSub(null);
+    }
     const lic = await checkAppLicense();
     setLicenseInfo(lic);
   };
 
   React.useEffect(() => {
     refreshLicense();
+    // Real-time auth listener: updates dashboard immediately on sign-in or sign-out!
+    const unsub = authService.onAuthStateChanged((user, sub) => {
+      setCurrentUser(user);
+      if (sub !== undefined) {
+        setCurrentSub(sub);
+      }
+      if (!user) {
+        setLicenseInfo(null);
+      }
+      refreshLicense();
+    });
+    return unsub;
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      refreshLicense();
+    }, [])
+  );
 
   const handlePickVideo = async () => {
     try {
