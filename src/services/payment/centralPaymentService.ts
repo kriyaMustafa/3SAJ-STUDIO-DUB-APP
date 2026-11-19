@@ -38,6 +38,18 @@ export interface PaymentStatusResponse {
 
 export class CentralPaymentClient {
   /**
+   * Pre-warms backend and payment servers in the background.
+   */
+  async prewarm(): Promise<void> {
+    try {
+      const backendUrl = authService.getBackendUrl() || 'https://threesaj-studio-dub-app.onrender.com';
+      fetch(`${backendUrl}/health`, { method: 'GET' }).catch(() => {});
+    } catch {
+      // Ignore background prewarm errors
+    }
+  }
+
+  /**
    * Creates a payment session via backend API.
    * Keeps secret ABA PayWay keys strictly on the server.
    * Seamlessly auto-authenticates guest sessions so payments outside Settings never fail.
@@ -66,11 +78,11 @@ export class CentralPaymentClient {
     const backendUrl = authService.getBackendUrl() || 'https://threesaj-studio-dub-app.onrender.com';
     let lastError: any = null;
 
-    // Retry up to 2 times to handle Render free-tier cold-start wake-up
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    // Retry up to 3 times with 45s timeout to seamlessly handle Render free-tier cold starts
+    for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-        const timeoutId = controller ? setTimeout(() => controller.abort(), 28000) : null;
+        const timeoutId = controller ? setTimeout(() => controller.abort(), 45000) : null;
 
         const response = await fetch(`${backendUrl}/api/subscriptions/checkout`, {
           method: 'POST',
@@ -126,9 +138,9 @@ export class CentralPaymentClient {
         return data;
       } catch (err: any) {
         lastError = err;
-        if (attempt === 1) {
-          // Brief pause before second attempt if server is waking up
-          await new Promise((r) => setTimeout(r, 1500));
+        if (attempt < 3) {
+          // Pause before next attempt while server spins up
+          await new Promise((r) => setTimeout(r, 2000 * attempt));
         }
       }
     }
@@ -141,7 +153,7 @@ export class CentralPaymentClient {
 
     if (isNetworkErr) {
       throw new Error(
-        `Unable to connect to payment server at ${backendUrl}. The backend server may be waking up or your internet connection is unstable. Please tap Retry in a few seconds.`
+        `Unable to reach payment server. The server may still be waking up. Please tap Retry to generate your ABA KHQR code.`
       );
     }
 

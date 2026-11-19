@@ -41,7 +41,8 @@ export async function fitAudioToSlot(
   slotDurationMs: number,
   _maxAtempo?: number
 ): Promise<TimeStretchResult> {
-  const actualDurationMs = await getMediaDurationMs(audioPath);
+  const cleanPath = audioPath.replace(/^file:\/\//, '');
+  const actualDurationMs = await getMediaDurationMs(cleanPath);
 
   // If slot duration is invalid or audio already fits within slot, no stretching needed
   if (slotDurationMs <= 0 || actualDurationMs <= slotDurationMs) {
@@ -54,19 +55,20 @@ export async function fitAudioToSlot(
     };
   }
 
-  // Calculate exact speedup ratio needed to fit perfectly into slotDurationMs
-  const targetRatio = Math.max(1.0, actualDurationMs / slotDurationMs);
+  // Calculate speedup ratio needed to fit cleanly into slotDurationMs with 40ms buffer
+  // This guarantees that 100% of the speech line completes inside the subtitle slot
+  const targetRatio = Math.max(1.02, (actualDurationMs + 40) / slotDurationMs);
   const atempoFilter = buildAtempoFilter(targetRatio);
-  const isMp3 = audioPath.toLowerCase().endsWith('.mp3');
+  const isMp3 = cleanPath.toLowerCase().endsWith('.mp3');
   const tempOutputPath = isMp3
-    ? audioPath.replace(/\.mp3$/i, '_stretched.mp3')
-    : audioPath.replace(/\.wav$/i, '_stretched.wav');
+    ? cleanPath.replace(/\.mp3$/i, '_stretched.mp3')
+    : cleanPath.replace(/\.wav$/i, '_stretched.wav');
 
-  // FFmpeg atempo command: speeds up audio with matching codec
-  // CRITICAL: We deliberately do NOT use '-t' to truncate or cut off speech!
-  // The chained atempo filter mathematically shrinks the duration to fit the slot without chopping any words.
+  // FFmpeg chained atempo command: accelerates speech naturally
+  // CRITICAL: We NEVER use '-t' to cut or truncate speech!
+  // The chained atempo filter accelerates the entire voice line so zero words are dropped or cut off.
   const codec = isMp3 ? '-c:a libmp3lame -b:a 128k' : '-c:a pcm_s16le';
-  const command = `-y -i "${audioPath}" -filter:a "${atempoFilter}" -ar 44100 -ac 1 ${codec} "${tempOutputPath}"`;
+  const command = `-y -i "${cleanPath}" -filter:a "${atempoFilter}" -ar 44100 -ac 1 ${codec} "${tempOutputPath}"`;
   const result = await runFFmpegCommand(command);
 
   if (!result.success) {
@@ -89,7 +91,10 @@ export async function fitAudioToSlot(
     to: audioPath,
   });
 
-  const finalDurationMs = await getMediaDurationMs(audioPath);
+  let finalDurationMs = await getMediaDurationMs(cleanPath);
+  if (finalDurationMs <= 0) {
+    finalDurationMs = Math.round(actualDurationMs / targetRatio);
+  }
 
   return {
     stretched: true,

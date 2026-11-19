@@ -47,6 +47,7 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
   onPaymentSuccess,
 }) => {
   const [loading, setLoading] = useState(true);
+  const [loadingMessage, setLoadingMessage] = useState('Generating ABA KHQR Code...');
   const [session, setSession] = useState<PaymentSessionResponse | null>(null);
   const [paymentStatus, setPaymentStatus] = useState<'PENDING' | 'PAID' | 'FAILED' | 'EXPIRED'>('PENDING');
   const [secondsRemaining, setSecondsRemaining] = useState(900); // 15 minutes
@@ -63,7 +64,12 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
     }
 
     pollCancelledRef.current = false;
+    setLoadingMessage('Generating ABA KHQR Code...');
     initPayment();
+
+    const loadTimer = setTimeout(() => {
+      setLoadingMessage('Connecting to secure payment gateway...\n(Server waking up, almost ready)');
+    }, 4000);
 
     const timer = setInterval(() => {
       setSecondsRemaining((prev) => {
@@ -77,6 +83,7 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
     }, 1000);
 
     return () => {
+      clearTimeout(loadTimer);
       clearInterval(timer);
       pollCancelledRef.current = true;
     };
@@ -194,7 +201,7 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
           {loading ? (
             <View style={styles.centerContainer}>
               <ActivityIndicator size="large" color="#005F73" />
-              <Text style={styles.loadingText}>Generating ABA KHQR Code...</Text>
+              <Text style={[styles.loadingText, { textAlign: 'center', lineHeight: 20 }]}>{loadingMessage}</Text>
             </View>
           ) : errorMessage ? (
             <View style={styles.centerContainer}>

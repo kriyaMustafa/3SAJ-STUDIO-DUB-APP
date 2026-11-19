@@ -96,7 +96,7 @@ export default function EditorScreen() {
   const handleExport = async () => {
     Alert.alert(
       'Export Final Dubbed Video',
-      'Mix Khmer TTS track with video using zero-watermark fast stream copy (-c:v copy -c:a aac)?',
+      'Render and export high-definition MP4 with full Android Gallery playback compatibility and perfect Khmer voice synchronization?',
       [
         { text: 'Cancel', style: 'cancel' },
         {

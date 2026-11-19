@@ -39,6 +39,7 @@ import { checkAppLicense } from '../services/licenseService';
 import { authService, SubscriptionInfo, UserProfile } from '../services/api/authService';
 import { LicenseStatus, TIER_CONFIGS } from '../types/license';
 import { videoSaveService } from '../services/videoSaveService';
+import { centralPaymentClient } from '../services/payment/centralPaymentService';
 
 export default function ProjectDashboardScreen() {
   const router = useRouter();
@@ -115,6 +116,7 @@ export default function ProjectDashboardScreen() {
 
   React.useEffect(() => {
     refreshLicense();
+    centralPaymentClient.prewarm().catch(() => {});
     // Real-time auth listener: updates dashboard immediately on sign-in or sign-out!
     const unsub = authService.onAuthStateChanged((user, sub) => {
       setCurrentUser(user);

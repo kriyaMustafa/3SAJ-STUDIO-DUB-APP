@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   View,
@@ -23,6 +23,7 @@ import {
 } from 'lucide-react-native';
 import { AbaKhqrModal } from './AbaKhqrModal';
 import { SubscriptionInfo } from '../../services/api/authService';
+import { centralPaymentClient } from '../../services/payment/centralPaymentService';
 
 export interface PlanOption {
   code: 'FLASH' | 'PRO' | 'PRO_MAX' | 'UNLIMITED';
@@ -118,6 +119,12 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
   const [selectedPlan, setSelectedPlan] = useState<PlanOption | null>(null);
   const [selectedAmount, setSelectedAmount] = useState<number>(0);
   const [checkoutVisible, setCheckoutVisible] = useState(false);
+
+  useEffect(() => {
+    if (visible) {
+      centralPaymentClient.prewarm().catch(() => {});
+    }
+  }, [visible]);
 
   const handleSelectPlan = (plan: PlanOption, amountToCharge: number) => {
     if (!userId || userId === 'anonymous_user') {
