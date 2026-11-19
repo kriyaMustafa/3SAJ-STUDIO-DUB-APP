@@ -5,8 +5,6 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useProjectStore } from '../store/useProjectStore';
-import { checkAppLicense } from '../services/licenseService';
-import { LicenseActivationModal } from '../components/modals/LicenseActivationModal';
 
 // Prevent splash screen from auto-hiding outside the component tree
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -23,7 +21,7 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => voi
         </Text>
         <TouchableOpacity
           onPress={retry}
-          style={{ backgroundColor: '#2563EB', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 8 }}
+          style={{ backgroundColor: '#005F73', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 8 }}
         >
           <Text style={{ color: '#FFFFFF', fontWeight: 'bold' }}>Try Again</Text>
         </TouchableOpacity>
@@ -34,7 +32,6 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => voi
 
 export default function RootLayout() {
   const [appIsReady, setAppIsReady] = useState(false);
-  const [isLicenseLocked, setIsLicenseLocked] = useState(false);
   const initStore = useProjectStore((s) => s.initStore);
 
   useEffect(() => {
@@ -43,10 +40,6 @@ export default function RootLayout() {
     async function prepare() {
       try {
         await initStore();
-        const licenseStatus = await checkAppLicense();
-        if (!licenseStatus.isValid) {
-          if (isMounted) setIsLicenseLocked(true);
-        }
       } catch (e) {
         console.warn('initStore error during startup:', e);
       } finally {
@@ -104,13 +97,6 @@ export default function RootLayout() {
           }}
         />
       </Stack>
-
-      {/* Mandatory License Gatekeeper - Locks app until valid license is activated */}
-      <LicenseActivationModal
-        visible={isLicenseLocked}
-        canClose={false}
-        onActivated={() => setIsLicenseLocked(false)}
-      />
     </SafeAreaProvider>
   );
 }

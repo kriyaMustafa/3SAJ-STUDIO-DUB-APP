@@ -27,6 +27,7 @@ interface ImportFromUrlModalProps {
   onClose: () => void;
   onImport: (url: string, onProgress: (p: ImportProgress) => void) => Promise<string>;
   onSuccess: (projectId: string) => void;
+  onRequestSubscription?: () => void;
 }
 
 export const ImportFromUrlModal: React.FC<ImportFromUrlModalProps> = ({
@@ -34,6 +35,7 @@ export const ImportFromUrlModal: React.FC<ImportFromUrlModalProps> = ({
   onClose,
   onImport,
   onSuccess,
+  onRequestSubscription,
 }) => {
   const backendApiUrl = useProjectStore((s) => s.settings.backendApiUrl);
   const [url, setUrl] = useState('');
@@ -83,7 +85,24 @@ export const ImportFromUrlModal: React.FC<ImportFromUrlModalProps> = ({
     } catch (err: any) {
       setIsLoading(false);
       setProgress(null);
-      Alert.alert('Import Failed', err.message || 'Could not download or import video.');
+      if (err.code === 'SUBSCRIPTION_REQUIRED' || err.message?.includes('subscription')) {
+        Alert.alert(
+          'Subscription Required',
+          'Please choose a 3SAJ Studio plan (Flash $5, Pro $8, Pro Max $10, Unlimited $15) with ABA KHQR to download & auto-translate.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Buy with ABA QR',
+              onPress: () => {
+                onClose();
+                onRequestSubscription?.();
+              },
+            },
+          ]
+        );
+      } else {
+        Alert.alert('Import Failed', err.message || 'Could not download or import video.');
+      }
     }
   };
 

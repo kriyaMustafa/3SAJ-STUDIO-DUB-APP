@@ -27,11 +27,14 @@ import {
   Zap,
   Award,
   Crown,
+  CreditCard,
 } from 'lucide-react-native';
 import { useProjectStore } from '../store/useProjectStore';
 import { Project } from '../types/project';
 import { ImportFromUrlModal } from '../components/modals/ImportFromUrlModal';
+import { SubscriptionPricingModal } from '../components/modals/SubscriptionPricingModal';
 import { checkAppLicense } from '../services/licenseService';
+import { authService, SubscriptionInfo, UserProfile } from '../services/api/authService';
 import { LicenseStatus, TIER_CONFIGS } from '../types/license';
 
 export default function ProjectDashboardScreen() {
@@ -48,14 +51,29 @@ export default function ProjectDashboardScreen() {
 
   const [modalVisible, setModalVisible] = useState(false);
   const [urlModalVisible, setUrlModalVisible] = useState(false);
+  const [pricingModalVisible, setPricingModalVisible] = useState(false);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [currentSub, setCurrentSub] = useState<SubscriptionInfo | null>(null);
   const [projectName, setProjectName] = useState('');
   const [videoFile, setVideoFile] = useState<{ uri: string; name: string } | null>(null);
   const [srtFile, setSrtFile] = useState<{ uri: string; name: string } | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [licenseInfo, setLicenseInfo] = useState<LicenseStatus | null>(null);
 
+  const refreshLicense = async () => {
+    try {
+      const profile = await authService.getCurrentProfile();
+      if (profile) {
+        setCurrentUser(profile.user);
+        setCurrentSub(profile.subscription);
+      }
+    } catch (_) {}
+    const lic = await checkAppLicense();
+    setLicenseInfo(lic);
+  };
+
   React.useEffect(() => {
-    checkAppLicense().then(setLicenseInfo).catch(() => {});
+    refreshLicense();
   }, []);
 
   const handlePickVideo = async () => {
@@ -177,13 +195,13 @@ export default function ProjectDashboardScreen() {
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          {licenseInfo?.isValid && licenseInfo.license && (
+          {licenseInfo?.isValid && licenseInfo.license ? (
             <TouchableOpacity
               style={[
                 styles.headerPlanBadge,
-                { borderColor: TIER_CONFIGS[licenseInfo.license.tier].badgeColor },
+                { borderColor: TIER_CONFIGS[licenseInfo.license.tier]?.badgeColor || '#38BDF8' },
               ]}
-              onPress={() => router.push('/settings')}
+              onPress={() => setPricingModalVisible(true)}
             >
               {licenseInfo.license.tier === 'FLASH' && <Zap size={13} color="#F59E0B" />}
               {licenseInfo.license.tier === 'PRO' && <Award size={13} color="#38BDF8" />}
@@ -193,11 +211,19 @@ export default function ProjectDashboardScreen() {
               <Text
                 style={[
                   styles.headerPlanText,
-                  { color: TIER_CONFIGS[licenseInfo.license.tier].badgeColor },
+                  { color: TIER_CONFIGS[licenseInfo.license.tier]?.badgeColor || '#38BDF8' },
                 ]}
               >
-                {TIER_CONFIGS[licenseInfo.license.tier].displayName}
+                {TIER_CONFIGS[licenseInfo.license.tier]?.displayName || licenseInfo.license.tier}
               </Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.headerBuyBtn}
+              onPress={() => setPricingModalVisible(true)}
+            >
+              <CreditCard size={13} color="#FFF" style={{ marginRight: 4 }} />
+              <Text style={styles.headerBuyBtnText}>Buy Plan (ABA QR)</Text>
             </TouchableOpacity>
           )}
 
@@ -209,6 +235,35 @@ export default function ProjectDashboardScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Prominent Buy with ABA QR Banner when no active plan */}
+      {(!licenseInfo?.isValid || !licenseInfo.license) && (
+        <TouchableOpacity
+          style={styles.subscribeBanner}
+          onPress={() => setPricingModalVisible(true)}
+          activeOpacity={0.88}
+        >
+          <View style={styles.subscribeBannerLeft}>
+            <View style={styles.subscribeIconBox}>
+              <CreditCard size={20} color="#10B981" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={styles.subscribeTitle}>Subscribe with ABA PayWay</Text>
+                <View style={styles.abaBadgeSmall}>
+                  <Text style={styles.abaBadgeSmallText}>KHQR</Text>
+                </View>
+              </View>
+              <Text style={styles.subscribeSubtitle}>
+                Flash ($5) • Pro ($8) • Pro Max ($10) • Unlimited ($15)
+              </Text>
+            </View>
+          </View>
+          <View style={styles.subscribeActionBtn}>
+            <Text style={styles.subscribeActionText}>Buy with ABA QR</Text>
+          </View>
+        </TouchableOpacity>
+      )}
 
       {/* Workspace Indicator Card */}
       <View style={styles.workspaceCard}>
@@ -429,8 +484,21 @@ export default function ProjectDashboardScreen() {
         visible={urlModalVisible}
         onClose={() => setUrlModalVisible(false)}
         onImport={importFromUrlAndTranslate}
+        onRequestSubscription={() => setPricingModalVisible(true)}
         onSuccess={(newProjectId) => {
           router.push(`/editor/${newProjectId}`);
+        }}
+      />
+
+      {/* Subscription Pricing Modal (Buy with ABA PayWay KHQR) */}
+      <SubscriptionPricingModal
+        visible={pricingModalVisible}
+        onClose={() => setPricingModalVisible(false)}
+        userId={currentUser?.id || 'anonymous_user'}
+        currentSubscription={currentSub}
+        onSubscriptionUpdated={async (newSub) => {
+          setCurrentSub(newSub);
+          await refreshLicense();
         }}
       />
     </SafeAreaView>
@@ -480,7 +548,79 @@ const styles = StyleSheet.create({
   },
   headerPlanText: {
     fontSize: 12,
+    fontWeight: '700',
+  },
+  headerBuyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#005F73',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  headerBuyBtnText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  subscribeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0B1E36',
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+  },
+  subscribeBannerLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  subscribeIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  subscribeTitle: {
+    color: '#F8FAFC',
+    fontSize: 13,
     fontWeight: '800',
+  },
+  abaBadgeSmall: {
+    backgroundColor: '#005F73',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  abaBadgeSmallText: {
+    color: '#FFF',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  subscribeSubtitle: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  subscribeActionBtn: {
+    backgroundColor: '#0284C7',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  subscribeActionText: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '700',
   },
   workspaceCard: {
     margin: 16,

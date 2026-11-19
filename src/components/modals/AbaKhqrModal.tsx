@@ -120,11 +120,19 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
             // Verify with backend to activate subscription in Neon DB
             try {
               const verifyRes = await authService.verifySubscriptionPayment(paymentId);
-              if (verifyRes.subscription) {
-                onPaymentSuccess(verifyRes.subscription);
-              }
+              const activeSub = verifyRes.subscription;
+              // Automatically return back to the app after 1.5 seconds
+              setTimeout(() => {
+                if (activeSub) {
+                  onPaymentSuccess(activeSub);
+                }
+                onClose();
+              }, 1500);
             } catch (e) {
               console.warn('Subscription activation verification error:', e);
+              setTimeout(() => {
+                onClose();
+              }, 1500);
             }
           } else if (['FAILED', 'EXPIRED'].includes(status.status)) {
             setPaymentStatus(status.status as any);
@@ -202,9 +210,9 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
               <Text style={styles.paidSubtext}>
                 Your {planName} subscription is now active for 30 days!
               </Text>
-              <TouchableOpacity style={styles.doneBtn} onPress={onClose}>
-                <Text style={styles.doneBtnText}>Start Using 3SAJ Studio</Text>
-              </TouchableOpacity>
+              <Text style={{ color: '#38BDF8', fontSize: 13, marginTop: 12, fontWeight: '600' }}>
+                Returning to app...
+              </Text>
             </View>
           ) : (
             <View style={styles.content}>

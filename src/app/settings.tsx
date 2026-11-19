@@ -36,8 +36,6 @@ import {
 } from 'lucide-react-native';
 import { useProjectStore } from '../store/useProjectStore';
 import { getApiKey, setApiKey } from '../services/secureStorage';
-import { LicenseActivationModal } from '../components/modals/LicenseActivationModal';
-import { AdminLicenseGeneratorModal } from '../components/modals/AdminLicenseGeneratorModal';
 import { SubscriptionPricingModal } from '../components/modals/SubscriptionPricingModal';
 import { AuthModal } from '../components/modals/AuthModal';
 import { DeviceManagementModal } from '../components/modals/DeviceManagementModal';
@@ -84,8 +82,6 @@ export default function SettingsScreen() {
   const [authModalVisible, setAuthModalVisible] = useState(false);
   const [pricingModalVisible, setPricingModalVisible] = useState(false);
   const [devicesModalVisible, setDevicesModalVisible] = useState(false);
-  const [licenseModalVisible, setLicenseModalVisible] = useState(false);
-  const [adminModalVisible, setAdminModalVisible] = useState(false);
 
   const refreshProfileAndSubscription = async () => {
     try {
@@ -338,14 +334,6 @@ export default function SettingsScreen() {
               >
                 <CreditCard size={14} color="#38BDF8" />
                 <Text style={styles.licenseActionBtnText}>Upgrade / Renew Plan</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.licenseAdminBtn}
-                onPress={() => setLicenseModalVisible(true)}
-              >
-                <Key size={14} color="#94A3B8" />
-                <Text style={styles.licenseAdminBtnText}>Offline Key</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -729,23 +717,6 @@ export default function SettingsScreen() {
       <DeviceManagementModal
         visible={devicesModalVisible}
         onClose={() => setDevicesModalVisible(false)}
-      />
-
-      <LicenseActivationModal
-        visible={licenseModalVisible}
-        canClose={true}
-        onClose={() => setLicenseModalVisible(false)}
-        onActivated={() => {
-          refreshProfileAndSubscription();
-          setLicenseModalVisible(false);
-        }}
-        title="Upgrade or Renew License"
-        subtitle="Enter a new license key to update your tier and quota"
-      />
-
-      <AdminLicenseGeneratorModal
-        visible={adminModalVisible}
-        onClose={() => setAdminModalVisible(false)}
       />
     </ScrollView>
   );

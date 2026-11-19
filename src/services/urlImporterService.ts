@@ -17,7 +17,7 @@ export interface ImportProgress {
 }
 
 // Configurable backend extraction endpoint (e.g. yt-dlp microservice or custom FastAPI server)
-export const DEFAULT_BACKEND_API_URL = 'http://192.168.1.X:8000';
+export const DEFAULT_BACKEND_API_URL = 'https://threesaj-studio-dub-app.onrender.com';
 export const DEFAULT_EXTRACTION_API = `${DEFAULT_BACKEND_API_URL}/extract`;
 
 /**
@@ -47,64 +47,65 @@ export async function fetchMediaFromUrl(
     ? useProjectStore.getState().settings?.backendApiUrl
     : undefined;
 
-  const rawUrl = (customBackendUrl || storeBackendUrl || DEFAULT_BACKEND_API_URL).trim();
+  let rawUrl = (customBackendUrl || storeBackendUrl || DEFAULT_BACKEND_API_URL).trim();
+  if (!rawUrl || rawUrl.includes('192.168.1.X')) {
+    rawUrl = DEFAULT_BACKEND_API_URL;
+  }
   const backendApiUrl = rawUrl.replace(/\/+$/, '');
 
-  if (backendApiUrl.includes('192.168.1.X')) {
-    throw new Error(
-      'Backend Extraction API URL is set to placeholder "http://192.168.1.X:8000". ' +
-      'Please go to Settings and enter your PC\'s actual local IP address (e.g., http://192.168.1.50:8000).'
-    );
+  const endpointsToTry = [
+    backendApiUrl.endsWith('/extract') ? backendApiUrl : `${backendApiUrl}/extract`,
+  ];
+  if (!endpointsToTry.includes(DEFAULT_EXTRACTION_API)) {
+    endpointsToTry.push(DEFAULT_EXTRACTION_API);
   }
 
-  const endpoint = backendApiUrl.endsWith('/extract')
-    ? backendApiUrl
-    : `${backendApiUrl}/extract`;
+  let lastError: any = null;
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+  for (const endpoint of endpointsToTry) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({ url: cleanUrl }),
-      signal: controller.signal,
-    });
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ url: cleanUrl }),
+        signal: controller.signal,
+      });
 
-    clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
 
-    if (response.ok) {
-      const data = await response.json();
-      if (!data.videoUrl) {
-        throw new Error('Extraction API did not return a valid video download URL.');
+      if (response.ok) {
+        const data = await response.json();
+        if (!data.videoUrl) {
+          throw new Error('Extraction API did not return a valid video download URL.');
+        }
+        return {
+          title: data.title || 'Imported_Video',
+          videoUrl: data.videoUrl,
+          srtUrl: data.srtUrl,
+          srtContent: data.srtContent,
+          thumbnailUrl: data.thumbnailUrl,
+          durationSeconds: data.durationSeconds,
+        };
+      } else {
+        const errorText = await response.text().catch(() => '');
+        throw new Error(`Extraction server error (${response.status}): ${errorText || response.statusText}`);
       }
-      return {
-        title: data.title || 'Imported_Video',
-        videoUrl: data.videoUrl,
-        srtUrl: data.srtUrl,
-        srtContent: data.srtContent,
-        thumbnailUrl: data.thumbnailUrl,
-        durationSeconds: data.durationSeconds,
-      };
-    } else {
-      const errorText = await response.text().catch(() => '');
-      throw new Error(`Extraction server responded with status ${response.status}: ${errorText || response.statusText}`);
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`Extraction attempt failed on ${endpoint}:`, err.message);
     }
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
-      throw new Error(`Connection to extraction API (${endpoint}) timed out after 20 seconds.`);
-    }
-
-    // If generic backend extraction is not yet deployed, provide helpful guidance or fallback
-    throw new Error(
-      `Could not extract media from URL (${err.message || 'Network error'}). ` +
-      `Ensure the backend extraction service at ${endpoint} is reachable, or paste a direct video link.`
-    );
   }
+
+  throw new Error(
+    lastError?.message ||
+    'Could not connect to extraction service. Please make sure your backend server is running and check Backend API URL in Settings.'
+  );
 }
 
 /**

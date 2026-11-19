@@ -54,7 +54,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bgmMode: 'MUTE_ORIGINAL',
   duckingVolume: 0.05,
   demucsEndpoint: 'http://192.168.1.100:8000/api/separate',
-  backendApiUrl: 'http://192.168.1.X:8000',
+  backendApiUrl: 'https://threesaj-studio-dub-app.onrender.com',
   autoExport: false,
   workspaceDir: FileSystem.documentDirectory ? `${FileSystem.documentDirectory}3saj_projects` : '3saj_projects',
 };
@@ -183,8 +183,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           if (parsed.translationMode === 'google_free') {
             parsed.translationMode = 'byok';
           }
-          if (!parsed.backendApiUrl) {
-            parsed.backendApiUrl = 'http://192.168.1.X:8000';
+          if (!parsed.backendApiUrl || parsed.backendApiUrl.includes('192.168.1.X')) {
+            parsed.backendApiUrl = 'https://threesaj-studio-dub-app.onrender.com';
           }
           set((state) => ({ settings: { ...state.settings, ...parsed } }));
         }
@@ -242,10 +242,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   importFromUrlAndTranslate: async (url, onProgress) => {
-    // 0. Verify active app license
+    // 0. Verify active app subscription
     const licenseCheck = await checkAppLicense();
     if (!licenseCheck.isValid) {
-      throw new Error(licenseCheck.message || 'Please activate a valid license key first.');
+      const err: any = new Error('No active subscription found. Please subscribe to Flash ($5), Pro ($8), Pro Max ($10), or Unlimited ($15) with ABA KHQR.');
+      err.code = 'SUBSCRIPTION_REQUIRED';
+      throw err;
     }
 
     onProgress?.({
@@ -277,6 +279,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     // Clean up temporary download directory
     await FileSystem.deleteAsync(tempDownloadDir, { idempotent: true }).catch(() => {});
+
+    // Ensure the new project is set as active so startTranslation works!
+    await get().selectProject(newProjectId);
 
     // 4. Automatically trigger translation
     onProgress?.({
