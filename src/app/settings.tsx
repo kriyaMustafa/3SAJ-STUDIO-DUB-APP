@@ -809,12 +809,13 @@ export default function SettingsScreen() {
       <SubscriptionPricingModal
         visible={pricingModalVisible}
         onClose={() => setPricingModalVisible(false)}
-        userId={currentUser?.id || 'anonymous_user'}
+        userId={currentUser?.id || (currentUser as any)?.user_id || 'anonymous_user'}
         currentSubscription={currentSub}
         onSubscriptionUpdated={(newSub) => {
           setCurrentSub(newSub);
           refreshProfileAndSubscription();
         }}
+        onRequestAuth={() => setAuthModalVisible(true)}
       />
 
       <DeviceManagementModal

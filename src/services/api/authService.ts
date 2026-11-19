@@ -14,6 +14,7 @@ const USER_PROFILE_KEY = '3saj_studio_user_profile';
 
 export interface UserProfile {
   id: string;
+  user_id?: string;
   email: string;
   full_name: string;
 }
@@ -423,18 +424,71 @@ export class AuthService {
     subscription: SubscriptionInfo | null;
     usage_today: DailyUsageInfo;
   } | null> {
-    const token = await this.getAccessToken();
-    if (!token) return null;
+    let token = await this.getValidAccessToken();
+    if (!token) {
+      // If offline or token missing, try loading locally cached profile
+      const stored = await this.getStoredUserProfile();
+      if (stored) {
+        return {
+          user: stored,
+          subscription: null,
+          usage_today: {
+            date: new Date().toISOString().split('T')[0],
+            plan_code: null,
+            daily_limit_minutes: null,
+            minutes_used: 0,
+            minutes_remaining: null,
+            seconds_until_midnight_reset: 0,
+            is_unlimited: false,
+          },
+        };
+      }
+      return null;
+    }
 
     try {
-      const response = await fetch(`${this.backendBaseUrl}/api/auth/me`, {
+      let response = await fetch(`${this.backendBaseUrl}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+
+      // If token expired on server, attempt refresh
+      if (response.status === 401) {
+        const refreshedToken = await this.refreshTokens();
+        if (refreshedToken) {
+          response = await fetch(`${this.backendBaseUrl}/api/auth/me`, {
+            headers: { Authorization: `Bearer ${refreshedToken}` },
+          });
+        }
+      }
+
       if (response.ok) {
-        return await response.json();
+        const data = await response.json();
+        if (data?.user) {
+          const uid = data.user.id || (data.user as any).user_id;
+          data.user.id = uid;
+          data.user.user_id = uid;
+          await this.storeUserProfile(data.user, data.subscription);
+        }
+        return data;
       }
       return null;
     } catch {
+      const stored = await this.getStoredUserProfile();
+      if (stored) {
+        return {
+          user: stored,
+          subscription: null,
+          usage_today: {
+            date: new Date().toISOString().split('T')[0],
+            plan_code: null,
+            daily_limit_minutes: null,
+            minutes_used: 0,
+            minutes_remaining: null,
+            seconds_until_midnight_reset: 0,
+            is_unlimited: false,
+          },
+        };
+      }
       return null;
     }
   }

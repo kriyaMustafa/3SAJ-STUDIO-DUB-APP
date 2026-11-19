@@ -597,12 +597,13 @@ export default function ProjectDashboardScreen() {
       <SubscriptionPricingModal
         visible={pricingModalVisible}
         onClose={() => setPricingModalVisible(false)}
-        userId={currentUser?.id || 'anonymous_user'}
+        userId={currentUser?.id || (currentUser as any)?.user_id || 'anonymous_user'}
         currentSubscription={currentSub}
         onSubscriptionUpdated={async (newSub) => {
           setCurrentSub(newSub);
           await refreshLicense();
         }}
+        onRequestAuth={() => setAuthModalVisible(true)}
       />
 
       {/* Auth & Account Registration Modal */}

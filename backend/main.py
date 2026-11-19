@@ -450,7 +450,14 @@ def get_current_user_profile(current=Depends(get_current_user_and_device)):
         usage = get_user_today_usage(conn, user_id)
 
     return {
-        "user": current,
+        "user": {
+            "id": user_id,
+            "user_id": user_id,
+            "email": current["email"],
+            "full_name": current["full_name"],
+            "device_id": current["device_id"],
+            "device_name": current["device_name"]
+        },
         "subscription": sub,
         "usage_today": usage
     }

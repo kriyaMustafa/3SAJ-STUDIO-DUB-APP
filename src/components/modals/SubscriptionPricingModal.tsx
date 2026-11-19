@@ -106,6 +106,7 @@ interface SubscriptionPricingModalProps {
   userId: string;
   currentSubscription?: SubscriptionInfo | null;
   onSubscriptionUpdated: (newSub: SubscriptionInfo) => void;
+  onRequestAuth?: () => void;
 }
 
 export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> = ({
@@ -114,6 +115,7 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
   userId,
   currentSubscription,
   onSubscriptionUpdated,
+  onRequestAuth,
 }) => {
   const { height: screenHeight, width: screenWidth } = useWindowDimensions();
   const [selectedPlan, setSelectedPlan] = useState<PlanOption | null>(null);
@@ -130,7 +132,17 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
     if (!userId || userId === 'anonymous_user') {
       Alert.alert(
         '📝 Account Registration Required',
-        'Please register or sign in first to select and pay for a subscription plan.'
+        'Please register or sign in first to select and pay for a subscription plan.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Register / Sign In',
+            onPress: () => {
+              onClose();
+              onRequestAuth?.();
+            },
+          },
+        ]
       );
       return;
     }
