@@ -8,7 +8,9 @@ import jwt
 from fastapi import HTTPException, status, Header, Depends
 from database import get_db_connection
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "3saj_studio_jwt_secret_secure_key_2026")
+JWT_SECRET = os.environ.get("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET environment variable is required. Please set it in your Render environment.")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours access token
 REFRESH_TOKEN_EXPIRE_DAYS = 30  # 30 days refresh token
