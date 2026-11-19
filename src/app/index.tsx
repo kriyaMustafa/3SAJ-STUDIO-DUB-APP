@@ -187,6 +187,8 @@ export default function ProjectDashboardScreen() {
             >
               {licenseInfo.license.tier === 'FLASH' && <Zap size={13} color="#F59E0B" />}
               {licenseInfo.license.tier === 'PRO' && <Award size={13} color="#38BDF8" />}
+              {licenseInfo.license.tier === 'PRO_MAX' && <Crown size={13} color="#A855F7" />}
+              {licenseInfo.license.tier === 'UNLIMITED' && <Sparkles size={13} color="#10B981" />}
               {licenseInfo.license.tier === 'PREMIUM' && <Crown size={13} color="#A855F7" />}
               <Text
                 style={[

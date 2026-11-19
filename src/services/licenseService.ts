@@ -9,6 +9,8 @@ import {
   DURATION_DAYS_MAP,
 } from '../types/license';
 import { hmacSha256 } from './cryptoUtils';
+import { authService } from './api/authService';
+import { usageService } from './api/usageService';
 
 const MASTER_SALT = '3SAJ_STUDIO_DUBBING_MASTER_LICENSE_SALT_2026';
 const LICENSE_STORAGE_KEY = 'saj_studio_active_license_v1';
@@ -49,7 +51,7 @@ export function verifyLicenseKey(rawKey: string): {
   error?: string;
 } {
   const cleaned = rawKey.trim().toUpperCase().replace(/\s+/g, '');
-  const match = cleaned.match(/^3SAJ-(FLASH|PRO|PREMIUM)-(\d+)D-([A-Z0-9]{5})-([A-F0-9]{8})$/);
+  const match = cleaned.match(/^3SAJ-(FLASH|PRO|PRO_MAX|UNLIMITED|PREMIUM)-(\d+)D-([A-Z0-9]{5})-([A-F0-9]{8})$/);
 
   if (!match) {
     return {
@@ -103,26 +105,17 @@ export async function activateLicense(rawKey: string): Promise<{
 
   const tier = verification.tier;
   const durationDays = verification.durationDays;
-  const tierConfig = TIER_CONFIGS[tier];
-
-  const now = Date.now();
-  const currentLicense = await getSavedLicense();
-
-  // If renewing the same tier before expiration, extend from current expiry; otherwise start now
-  const baseTime =
-    currentLicense && currentLicense.expiresAt > now && currentLicense.tier === tier
-      ? currentLicense.expiresAt
-      : now;
-
-  const expiresAt = baseTime + durationDays * 24 * 60 * 60 * 1000;
+  const activatedAt = Date.now();
+  const expiresAt = activatedAt + durationDays * 24 * 60 * 60 * 1000;
+  const dailyLimitSeconds = TIER_CONFIGS[tier]?.dailyLimitSeconds || 10800;
 
   const licenseData: LicenseData = {
     key: rawKey.trim().toUpperCase(),
     tier,
     durationDays,
-    activatedAt: now,
+    activatedAt,
     expiresAt,
-    dailyLimitSeconds: tierConfig.dailyLimitSeconds,
+    dailyLimitSeconds,
   };
 
   try {
@@ -130,12 +123,13 @@ export async function activateLicense(rawKey: string): Promise<{
     return {
       success: true,
       license: licenseData,
-      message: `Successfully activated ${tierConfig.displayName} Plan (${durationDays} days). Daily quota: ${tierConfig.dailyLimitHours}h/day.`,
+      message: `Successfully activated ${TIER_CONFIGS[tier]?.displayName || tier} Plan for ${durationDays} days!`,
     };
-  } catch (err: any) {
+  } catch (err) {
+    console.error('[LicenseService] Failed to save license:', err);
     return {
       success: false,
-      message: `Failed to save license: ${err.message}`,
+      message: 'Failed to securely store license on device.',
     };
   }
 }
@@ -155,11 +149,43 @@ export async function getSavedLicense(): Promise<LicenseData | null> {
 }
 
 /**
- * Checks overall app license status (validity, expiration, time left).
+ * Checks overall app subscription status.
+ * Authoritatively queries server-side PostgreSQL first via authService,
+ * then falls back to local SecureStore.
  */
 export async function checkAppLicense(): Promise<LicenseStatus> {
-  const license = await getSavedLicense();
+  // 1. Check server-side subscription
+  try {
+    const profile = await authService.getCurrentProfile();
+    if (profile && profile.subscription) {
+      const sub = profile.subscription;
+      const tier = (sub.plan_code in TIER_CONFIGS ? sub.plan_code : 'PRO') as LicenseTier;
+      const dailyLimitSeconds = sub.daily_minute_limit ? sub.daily_minute_limit * 60 : 864000;
 
+      const licenseData: LicenseData = {
+        key: `CENTRAL-${sub.subscription_id.slice(0, 8)}`,
+        tier,
+        durationDays: 30,
+        activatedAt: Date.now(),
+        expiresAt: new Date(sub.expires_at).getTime(),
+        dailyLimitSeconds,
+      };
+
+      return {
+        isValid: true,
+        isExpired: false,
+        license: licenseData,
+        daysRemaining: sub.days_remaining,
+        hoursRemaining: sub.hours_remaining,
+        message: `Active: ${sub.plan_name} (${sub.days_remaining}d ${sub.hours_remaining}h left)`,
+      };
+    }
+  } catch (e) {
+    console.warn('[LicenseService] Server profile check error:', e);
+  }
+
+  // 2. Check local fallback license
+  const license = await getSavedLicense();
   if (!license) {
     return {
       isValid: false,
@@ -167,7 +193,7 @@ export async function checkAppLicense(): Promise<LicenseStatus> {
       license: null,
       daysRemaining: 0,
       hoursRemaining: 0,
-      message: 'No license key found. Please activate your license to use the app.',
+      message: 'No active subscription. Please subscribe to Flash, Pro, Pro Max, or Unlimited in Settings.',
     };
   }
 
@@ -181,7 +207,7 @@ export async function checkAppLicense(): Promise<LicenseStatus> {
       license,
       daysRemaining: 0,
       hoursRemaining: 0,
-      message: `Your ${TIER_CONFIGS[license.tier]?.displayName || license.tier} Plan expired. Please enter a new license key to continue.`,
+      message: `Your ${TIER_CONFIGS[license.tier]?.displayName || license.tier} Plan expired. Please renew your subscription to continue.`,
     };
   }
 
@@ -202,7 +228,28 @@ export async function checkAppLicense(): Promise<LicenseStatus> {
  * Returns today's video translation usage statistics.
  */
 export async function getDailyUsage(tierLimitSeconds: number): Promise<DailyUsageData> {
-  const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  // Try fetching from server first
+  try {
+    const todayUsage = await usageService.getTodayUsage();
+    if (todayUsage) {
+      const usedSec = Math.round(todayUsage.minutes_used * 60);
+      const limitSec = todayUsage.daily_limit_minutes ? todayUsage.daily_limit_minutes * 60 : tierLimitSeconds;
+      const remSec = todayUsage.minutes_remaining !== null ? Math.round(todayUsage.minutes_remaining * 60) : limitSec;
+
+      return {
+        date: todayUsage.date,
+        secondsUsed: usedSec,
+        secondsRemaining: remSec,
+        dailyLimitSeconds: limitSec,
+        percentageUsed: Math.min(100, Math.round((usedSec / limitSec) * 100)),
+      };
+    }
+  } catch (e) {
+    console.warn('[LicenseService] Error reading server usage:', e);
+  }
+
+  // Local fallback
+  const todayStr = new Date().toISOString().slice(0, 10);
   let secondsUsed = 0;
 
   try {
@@ -214,7 +261,7 @@ export async function getDailyUsage(tierLimitSeconds: number): Promise<DailyUsag
       }
     }
   } catch (err) {
-    console.warn('[LicenseService] Error reading daily usage:', err);
+    console.warn('[LicenseService] Error reading local daily usage:', err);
   }
 
   const secondsRemaining = Math.max(0, tierLimitSeconds - secondsUsed);
@@ -232,7 +279,15 @@ export async function getDailyUsage(tierLimitSeconds: number): Promise<DailyUsag
 /**
  * Records newly translated video seconds into today's quota.
  */
-export async function recordDailyUsage(secondsAdded: number): Promise<void> {
+export async function recordDailyUsage(secondsAdded: number, idempotencyToken?: string): Promise<void> {
+  if (idempotencyToken) {
+    try {
+      await usageService.commitTranslationQuota(idempotencyToken);
+    } catch (e) {
+      console.warn('[LicenseService] Server commit error:', e);
+    }
+  }
+
   const todayStr = new Date().toISOString().slice(0, 10);
   let currentUsed = 0;
 
@@ -253,7 +308,7 @@ export async function recordDailyUsage(secondsAdded: number): Promise<void> {
       JSON.stringify({ date: todayStr, secondsUsed: newTotal })
     );
   } catch (err) {
-    console.warn('[LicenseService] Error updating daily usage:', err);
+    console.warn('[LicenseService] Error updating local daily usage:', err);
   }
 }
 
@@ -270,7 +325,7 @@ export async function checkDailyTranslationQuota(
   dailyLimitSeconds: number;
   tierName: string;
 }> {
-  const tierConfig = TIER_CONFIGS[license.tier];
+  const tierConfig = TIER_CONFIGS[license.tier] || TIER_CONFIGS.PRO;
   const usage = await getDailyUsage(tierConfig.dailyLimitSeconds);
 
   // If already at or exceeding daily quota

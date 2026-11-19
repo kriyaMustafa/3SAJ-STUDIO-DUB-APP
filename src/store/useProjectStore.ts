@@ -462,7 +462,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         return sum + (segDur > 0 ? segDur : 3);
       }, 0);
       if (newlyTranslatedSeconds > 0) {
-        await recordDailyUsage(newlyTranslatedSeconds);
+        const idempotencyToken = `trans_${activeProject.id}_${Date.now()}`;
+        await recordDailyUsage(newlyTranslatedSeconds, idempotencyToken);
       }
 
       set({
@@ -563,7 +564,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         settings,
         glossary
       );
-      await recordDailyUsage(rangeSeconds);
+      const idempotencyToken = `repair_${activeProject.id}_${fromId}_${toId}_${Date.now()}`;
+      await recordDailyUsage(rangeSeconds, idempotencyToken);
       set({ segments: updated, isTranslating: false });
     } catch (err: any) {
       set({ isTranslating: false });

@@ -27,12 +27,22 @@ import {
   Zap,
   Award,
   Crown,
+  Smartphone,
+  User,
+  LogOut,
+  CreditCard,
+  Clock,
+  Infinity as InfinityIcon,
 } from 'lucide-react-native';
 import { useProjectStore } from '../store/useProjectStore';
 import { getApiKey, setApiKey } from '../services/secureStorage';
 import { LicenseActivationModal } from '../components/modals/LicenseActivationModal';
 import { AdminLicenseGeneratorModal } from '../components/modals/AdminLicenseGeneratorModal';
+import { SubscriptionPricingModal } from '../components/modals/SubscriptionPricingModal';
+import { AuthModal } from '../components/modals/AuthModal';
+import { DeviceManagementModal } from '../components/modals/DeviceManagementModal';
 import { checkAppLicense, getDailyUsage } from '../services/licenseService';
+import { authService, UserProfile, SubscriptionInfo } from '../services/api/authService';
 import { LicenseStatus, DailyUsageData, TIER_CONFIGS } from '../types/license';
 import {
   TranslationMode,
@@ -64,13 +74,36 @@ export default function SettingsScreen() {
   const [backendApiUrl, setBackendApiUrl] = useState(settings.backendApiUrl || 'http://192.168.1.X:8000');
   const [autoExport, setAutoExport] = useState(settings.autoExport);
 
-  // License state
+  // User & Subscription state
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [currentSub, setCurrentSub] = useState<SubscriptionInfo | null>(null);
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const [dailyUsage, setDailyUsage] = useState<DailyUsageData | null>(null);
+
+  // Modals state
+  const [authModalVisible, setAuthModalVisible] = useState(false);
+  const [pricingModalVisible, setPricingModalVisible] = useState(false);
+  const [devicesModalVisible, setDevicesModalVisible] = useState(false);
   const [licenseModalVisible, setLicenseModalVisible] = useState(false);
   const [adminModalVisible, setAdminModalVisible] = useState(false);
 
-  const refreshLicenseInfo = async () => {
+  const refreshProfileAndSubscription = async () => {
+    try {
+      if (settings.backendApiUrl) {
+        authService.setBackendUrl(settings.backendApiUrl);
+      }
+      const profileData = await authService.getCurrentProfile();
+      if (profileData) {
+        setCurrentUser(profileData.user);
+        setCurrentSub(profileData.subscription);
+      } else {
+        const cachedUser = await authService.getStoredUserProfile();
+        setCurrentUser(cachedUser);
+      }
+    } catch (e) {
+      console.warn('Failed refreshing profile:', e);
+    }
+
     const status = await checkAppLicense();
     setLicenseStatus(status);
     if (status.license) {
@@ -80,12 +113,13 @@ export default function SettingsScreen() {
   };
 
   useEffect(() => {
-    refreshLicenseInfo();
+    refreshProfileAndSubscription();
   }, []);
 
   useEffect(() => {
     if (settings.backendApiUrl) {
       setBackendApiUrl(settings.backendApiUrl);
+      authService.setBackendUrl(settings.backendApiUrl);
     }
   }, [settings.backendApiUrl]);
 
@@ -117,6 +151,22 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleLogout = async () => {
+    Alert.alert('Sign Out', 'Are you sure you want to log out from this device?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: async () => {
+          await authService.logout();
+          setCurrentUser(null);
+          setCurrentSub(null);
+          refreshProfileAndSubscription();
+        },
+      },
+    ]);
+  };
+
   const handleSaveAll = async () => {
     // 1. Save API keys securely
     await Promise.all([
@@ -140,20 +190,75 @@ export default function SettingsScreen() {
       autoExport,
     });
 
-    Alert.alert('Settings Saved', 'All preferences and secure API keys updated successfully.');
+    authService.setBackendUrl(backendApiUrl.trim());
+
+    Alert.alert('Settings Saved', 'All preferences, server connection, and secure API keys updated.');
     router.back();
   };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* SECTION 0: APP LICENSE & DAILY QUOTA */}
+      {/* SECTION 0: ACCOUNT & DEVICE MANAGEMENT */}
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <User size={18} color="#38BDF8" />
+          <Text style={styles.sectionTitle}>3SAJ Account & Devices</Text>
+        </View>
+
+        {currentUser ? (
+          <View style={styles.accountCard}>
+            <View style={styles.accountHeaderRow}>
+              <View>
+                <Text style={styles.accountEmail}>{currentUser.email}</Text>
+                {currentUser.full_name && (
+                  <Text style={styles.accountName}>{currentUser.full_name}</Text>
+                )}
+              </View>
+              <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
+                <LogOut size={14} color="#EF4444" style={{ marginRight: 4 }} />
+                <Text style={styles.logoutBtnText}>Sign Out</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.deviceManageRow}>
+              <View style={styles.deviceCountBox}>
+                <Smartphone size={14} color="#10B981" />
+                <Text style={styles.deviceCountText}>Device limit: Max 2 phones active</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.manageDevicesBtn}
+                onPress={() => setDevicesModalVisible(true)}
+              >
+                <Text style={styles.manageDevicesBtnText}>Manage Devices</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.loginBanner}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.loginBannerTitle}>Sign in to your account</Text>
+              <Text style={styles.loginBannerSub}>
+                Sync subscriptions across your devices and protect your translation quota.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.signInBtn}
+              onPress={() => setAuthModalVisible(true)}
+            >
+              <Text style={styles.signInBtnText}>Sign In / Register</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+
+      {/* SECTION 1: SUBSCRIPTION & CENTRAL ABA PAYMENT */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <ShieldCheck size={18} color="#10B981" />
-          <Text style={styles.sectionTitle}>App License & Daily Translation Quota</Text>
+          <Text style={styles.sectionTitle}>Subscription & ABA PayWay</Text>
         </View>
         <Text style={styles.sectionSubtitle}>
-          Tiered subscription plan and daily video translation allowance.
+          Tiered plans with daily video translation allowance. Instant activation via ABA KHQR.
         </Text>
 
         {licenseStatus?.isValid && licenseStatus.license ? (
@@ -162,36 +267,43 @@ export default function SettingsScreen() {
               <View style={styles.tierBadge}>
                 {licenseStatus.license.tier === 'FLASH' && <Zap size={14} color="#F59E0B" />}
                 {licenseStatus.license.tier === 'PRO' && <Award size={14} color="#38BDF8" />}
-                {licenseStatus.license.tier === 'PREMIUM' && <Crown size={14} color="#A855F7" />}
+                {licenseStatus.license.tier === 'PRO_MAX' && <Crown size={14} color="#A855F7" />}
+                {licenseStatus.license.tier === 'UNLIMITED' && <InfinityIcon size={14} color="#10B981" />}
                 <Text
                   style={[
                     styles.tierBadgeText,
-                    { color: TIER_CONFIGS[licenseStatus.license.tier].badgeColor },
+                    { color: TIER_CONFIGS[licenseStatus.license.tier]?.badgeColor || '#38BDF8' },
                   ]}
                 >
-                  {TIER_CONFIGS[licenseStatus.license.tier].displayName} Plan
+                  {TIER_CONFIGS[licenseStatus.license.tier]?.displayName || licenseStatus.license.tier} Plan
                 </Text>
               </View>
               <Text style={styles.licenseExpiryText}>
-                {licenseStatus.daysRemaining} days left
+                {licenseStatus.daysRemaining} days remaining
               </Text>
             </View>
 
             <Text style={styles.licenseDetail}>
-              • Daily Quota: {TIER_CONFIGS[licenseStatus.license.tier].dailyLimitHours} Hours / Day
+              • Daily Allowance:{' '}
+              {licenseStatus.license.tier === 'UNLIMITED'
+                ? 'Unlimited Video Minutes / Day'
+                : `${TIER_CONFIGS[licenseStatus.license.tier]?.dailyLimitHours || 5} Hours / Day`}
             </Text>
             <Text style={styles.licenseDetail}>
-              • Expires: {new Date(licenseStatus.license.expiresAt).toLocaleDateString()}
+              • Active Until: {new Date(licenseStatus.license.expiresAt).toLocaleDateString()}
             </Text>
 
             {/* Daily Usage Progress Bar */}
             {dailyUsage && (
               <View style={styles.usageContainer}>
                 <View style={styles.usageHeaderRow}>
-                  <Text style={styles.usageTitle}>Today's Translation Used:</Text>
+                  <Text style={styles.usageTitle}>Today's Video Quota:</Text>
                   <Text style={styles.usageStats}>
                     {Math.round(dailyUsage.secondsUsed / 60)}m /{' '}
-                    {Math.round(dailyUsage.dailyLimitSeconds / 60)}m ({dailyUsage.percentageUsed}%)
+                    {licenseStatus.license.tier === 'UNLIMITED'
+                      ? '∞'
+                      : `${Math.round(dailyUsage.dailyLimitSeconds / 60)}m`}{' '}
+                    ({dailyUsage.percentageUsed}%)
                   </Text>
                 </View>
 
@@ -212,7 +324,9 @@ export default function SettingsScreen() {
                   />
                 </View>
                 <Text style={styles.usageRemainingText}>
-                  {Math.round(dailyUsage.secondsRemaining / 60)} minutes remaining today (Resets at midnight)
+                  {licenseStatus.license.tier === 'UNLIMITED'
+                    ? 'Unlimited minutes enabled (Fair Use)'
+                    : `${Math.round(dailyUsage.secondsRemaining / 60)} min remaining today (Resets at midnight Cambodia)`}
                 </Text>
               </View>
             )}
@@ -220,38 +334,38 @@ export default function SettingsScreen() {
             <View style={styles.licenseBtnRow}>
               <TouchableOpacity
                 style={styles.licenseActionBtn}
-                onPress={() => setLicenseModalVisible(true)}
+                onPress={() => setPricingModalVisible(true)}
               >
-                <Key size={14} color="#38BDF8" />
-                <Text style={styles.licenseActionBtnText}>Upgrade / Change Key</Text>
+                <CreditCard size={14} color="#38BDF8" />
+                <Text style={styles.licenseActionBtnText}>Upgrade / Renew Plan</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.licenseAdminBtn}
-                onPress={() => setAdminModalVisible(true)}
+                onPress={() => setLicenseModalVisible(true)}
               >
-                <Sparkles size={14} color="#F59E0B" />
-                <Text style={styles.licenseAdminBtnText}>Admin Tool</Text>
+                <Key size={14} color="#94A3B8" />
+                <Text style={styles.licenseAdminBtnText}>Offline Key</Text>
               </TouchableOpacity>
             </View>
           </View>
         ) : (
           <View style={styles.noLicenseBox}>
             <Text style={styles.noLicenseText}>
-              {licenseStatus?.message || 'No active license key found.'}
+              No active subscription found. Subscribe to Flash ($5), Pro ($8), Pro Max ($10), or Unlimited ($15).
             </Text>
             <TouchableOpacity
               style={styles.activateNowBtn}
-              onPress={() => setLicenseModalVisible(true)}
+              onPress={() => setPricingModalVisible(true)}
             >
-              <Key size={16} color="#FFFFFF" />
-              <Text style={styles.activateNowBtnText}>Activate License Now</Text>
+              <CreditCard size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Text style={styles.activateNowBtnText}>Choose Subscription Plan</Text>
             </TouchableOpacity>
           </View>
         )}
       </View>
 
-      {/* SECTION 1: SECURE API KEYS (BYOK) */}
+      {/* SECTION 2: SECURE API KEYS (BYOK) */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <Key size={18} color="#F59E0B" />
@@ -311,7 +425,7 @@ export default function SettingsScreen() {
 
         {/* OpenAI */}
         <View style={styles.fieldGroup}>
-          <Text style={styles.fieldLabel}>OpenAI (ChatGPT) API Key:</Text>
+          <Text style={styles.fieldLabel}>OpenAI API Key (sk-...):</Text>
           <View style={styles.keyInputRow}>
             <TextInput
               style={styles.keyInput}
@@ -329,14 +443,14 @@ export default function SettingsScreen() {
             style={styles.linkButton}
             onPress={() => openUrl('https://platform.openai.com/api-keys')}
           >
-            <ExternalLink size={13} color="#34D399" />
-            <Text style={[styles.linkButtonText, { color: '#34D399' }]}>👉 ចុចទីនេះដើម្បីបង្កើត OpenAI API Key</Text>
+            <ExternalLink size={13} color="#38BDF8" />
+            <Text style={styles.linkButtonText}>👉 ចុចទីនេះដើម្បីយក OpenAI API Key</Text>
           </TouchableOpacity>
         </View>
 
         {/* Claude */}
         <View style={styles.fieldGroup}>
-          <Text style={styles.fieldLabel}>Anthropic Claude API Key:</Text>
+          <Text style={styles.fieldLabel}>Anthropic Claude API Key (sk-ant-...):</Text>
           <View style={styles.keyInputRow}>
             <TextInput
               style={styles.keyInput}
@@ -354,14 +468,14 @@ export default function SettingsScreen() {
             style={styles.linkButton}
             onPress={() => openUrl('https://console.anthropic.com/settings/keys')}
           >
-            <ExternalLink size={13} color="#FBBF24" />
-            <Text style={[styles.linkButtonText, { color: '#FBBF24' }]}>👉 ចុចទីនេះដើម្បីបង្កើត Claude API Key</Text>
+            <ExternalLink size={13} color="#38BDF8" />
+            <Text style={styles.linkButtonText}>👉 ចុចទីនេះដើម្បីយក Claude API Key</Text>
           </TouchableOpacity>
         </View>
 
         {/* DeepSeek */}
         <View style={styles.fieldGroup}>
-          <Text style={styles.fieldLabel}>DeepSeek API Key:</Text>
+          <Text style={styles.fieldLabel}>DeepSeek API Key (sk-...):</Text>
           <View style={styles.keyInputRow}>
             <TextInput
               style={styles.keyInput}
@@ -379,25 +493,25 @@ export default function SettingsScreen() {
             style={styles.linkButton}
             onPress={() => openUrl('https://platform.deepseek.com/api_keys')}
           >
-            <ExternalLink size={13} color="#818CF8" />
-            <Text style={[styles.linkButtonText, { color: '#818CF8' }]}>👉 ចុចទីនេះដើម្បីបង្កើត DeepSeek API Key</Text>
+            <ExternalLink size={13} color="#38BDF8" />
+            <Text style={styles.linkButtonText}>👉 ចុចទីនេះដើម្បីយក DeepSeek API Key</Text>
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* SECTION 2: TRANSLATION ENGINE & BATCHING */}
+      {/* SECTION 3: TRANSLATION ENGINE & BATCHING */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <Sliders size={18} color="#38BDF8" />
-          <Text style={styles.sectionTitle}>Translation Engine Mode</Text>
+          <Text style={styles.sectionTitle}>Translation Engine</Text>
         </View>
 
         {/* Mode Selector */}
         <View style={styles.selectorRow}>
           {[
+            { id: 'free_google', label: 'Free Google' },
             { id: 'byok', label: 'BYOK AI API' },
-            { id: 'google_free', label: 'Free Google' },
-            { id: 'manual_batch', label: 'Manual Web' },
+            { id: 'manual_batch', label: 'Manual Batch' },
           ].map((m) => (
             <TouchableOpacity
               key={m.id}
@@ -411,20 +525,20 @@ export default function SettingsScreen() {
           ))}
         </View>
 
-        {/* Provider selection if BYOK */}
+        {/* AI Provider */}
         {translationMode === 'byok' && (
           <View style={styles.fieldGroup}>
             <Text style={styles.fieldLabel}>Active AI Provider:</Text>
-            <View style={styles.providerGrid}>
+            <View style={styles.selectorRow}>
               {[
-                { id: 'gemini', label: 'Gemini Flash' },
-                { id: 'openai', label: 'GPT-4o Mini' },
-                { id: 'claude', label: 'Claude 3.5' },
-                { id: 'deepseek', label: 'DeepSeek Chat' },
+                { id: 'gemini', label: 'Gemini' },
+                { id: 'openai', label: 'GPT-4o' },
+                { id: 'claude', label: 'Claude' },
+                { id: 'deepseek', label: 'DeepSeek' },
               ].map((p) => (
                 <TouchableOpacity
                   key={p.id}
-                  style={[styles.providerBtn, aiProvider === p.id && styles.providerBtnActive]}
+                  style={[styles.providerPill, aiProvider === p.id && styles.providerPillActive]}
                   onPress={() => setAiProvider(p.id as AIProvider)}
                 >
                   <Text style={[styles.providerText, aiProvider === p.id && styles.providerTextActive]}>
@@ -438,52 +552,29 @@ export default function SettingsScreen() {
 
         {/* Batch Size */}
         <View style={styles.fieldGroup}>
-          <Text style={styles.fieldLabel}>Segments Per Batch (Default: 200):</Text>
-          <View style={styles.selectorRow}>
-            {['50', '100', '200', '300', '500'].map((preset) => (
-              <TouchableOpacity
-                key={preset}
-                style={[
-                  styles.modePill,
-                  batchSize === preset && styles.modePillActive,
-                ]}
-                onPress={() => setBatchSize(preset)}
-              >
-                <Text
-                  style={[
-                    styles.modeText,
-                    batchSize === preset && styles.modeTextActive,
-                  ]}
-                >
-                  {preset}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+          <Text style={styles.fieldLabel}>Translation Batch Size (Lines per request):</Text>
           <TextInput
-            style={[styles.numberInput, { marginTop: 8 }]}
+            style={styles.numberInput}
             value={batchSize}
             onChangeText={setBatchSize}
             keyboardType="numeric"
-            placeholder="200"
-            placeholderTextColor="#64748B"
           />
         </View>
       </View>
 
-      {/* SECTION 3: VOICE DUBBING & TONE PRESETS */}
+      {/* SECTION 4: VOICE OVER & TTS DUBBING */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <Mic size={18} color="#10B981" />
-          <Text style={styles.sectionTitle}>Khmer TTS Voice & Tone Presets</Text>
+          <Text style={styles.sectionTitle}>Khmer Voice Dubbing Engine</Text>
         </View>
 
         {/* Voice Mode */}
         <View style={styles.selectorRow}>
           {[
-            { id: 'AUTO_DETECT', label: 'Auto (AI Tagged)' },
-            { id: 'MALE_ONLY', label: 'Male (Piseth)' },
-            { id: 'FEMALE_ONLY', label: 'Female (Sreymom)' },
+            { id: 'AUTO_DETECT', label: 'Auto (Gender/Age)' },
+            { id: 'ALL_MALE', label: 'All Piseth (Male)' },
+            { id: 'ALL_FEMALE', label: 'All Sreymom (Fem)' },
           ].map((v) => (
             <TouchableOpacity
               key={v.id}
@@ -495,14 +586,6 @@ export default function SettingsScreen() {
               </Text>
             </TouchableOpacity>
           ))}
-        </View>
-
-        {/* Tone presets explanation card */}
-        <View style={styles.presetExplCard}>
-          <Text style={styles.presetTitle}>Active Tone Shifting Profiles:</Text>
-          <Text style={styles.presetItem}>• Adult (Default): Pitch 0Hz, Rate +0%</Text>
-          <Text style={styles.presetItem}>• Old Man / Elder: Pitch -18Hz, Rate -8%</Text>
-          <Text style={styles.presetItem}>• Child / Kid: Pitch +30Hz, Rate +10%</Text>
         </View>
 
         {/* Concurrency */}
@@ -533,7 +616,7 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      {/* SECTION 4: BGM & EXPORT */}
+      {/* SECTION 5: BGM & EXPORT */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <Music size={18} color="#A78BFA" />
@@ -589,18 +672,18 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      {/* SECTION 5: BACKEND EXTRACTION SERVICE */}
+      {/* SECTION 6: BACKEND EXTRACTION & SERVER API */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <Globe size={18} color="#38BDF8" />
-          <Text style={styles.sectionTitle}>Backend Extraction API</Text>
+          <Text style={styles.sectionTitle}>Backend Server & Video Extractor API</Text>
         </View>
         <Text style={styles.sectionSubtitle}>
-          Local or remote microservice for downloading videos and subtitles from URL.
+          Local or remote microservice for account sync, daily quotas, and downloading videos from URL.
         </Text>
 
         <View style={styles.fieldGroup}>
-          <Text style={styles.fieldLabel}>Backend Extraction API URL:</Text>
+          <Text style={styles.fieldLabel}>Backend API URL:</Text>
           <TextInput
             style={styles.textInput}
             value={backendApiUrl}
@@ -611,7 +694,7 @@ export default function SettingsScreen() {
             autoCorrect={false}
           />
           <Text style={styles.helperText}>
-            Points to your PC's local IP running the extraction service (e.g. http://192.168.1.50:8000). The app sends requests to /extract.
+            Points to your 3SAJ backend server (e.g. http://192.168.1.50:8000 or production URL).
           </Text>
         </View>
       </View>
@@ -622,20 +705,44 @@ export default function SettingsScreen() {
         <Text style={styles.saveBtnText}>Save All Settings & Keys</Text>
       </TouchableOpacity>
 
-      {/* License Activation Modal (Can close from settings) */}
+      {/* Modals */}
+      <AuthModal
+        visible={authModalVisible}
+        onClose={() => setAuthModalVisible(false)}
+        onAuthSuccess={(user) => {
+          setCurrentUser(user);
+          refreshProfileAndSubscription();
+        }}
+      />
+
+      <SubscriptionPricingModal
+        visible={pricingModalVisible}
+        onClose={() => setPricingModalVisible(false)}
+        userId={currentUser?.id || 'anonymous_user'}
+        currentSubscription={currentSub}
+        onSubscriptionUpdated={(newSub) => {
+          setCurrentSub(newSub);
+          refreshProfileAndSubscription();
+        }}
+      />
+
+      <DeviceManagementModal
+        visible={devicesModalVisible}
+        onClose={() => setDevicesModalVisible(false)}
+      />
+
       <LicenseActivationModal
         visible={licenseModalVisible}
         canClose={true}
         onClose={() => setLicenseModalVisible(false)}
         onActivated={() => {
-          refreshLicenseInfo();
+          refreshProfileAndSubscription();
           setLicenseModalVisible(false);
         }}
         title="Upgrade or Renew License"
         subtitle="Enter a new license key to update your tier and quota"
       />
 
-      {/* Admin License Generator Modal */}
       <AdminLicenseGeneratorModal
         visible={adminModalVisible}
         onClose={() => setAdminModalVisible(false)}
@@ -652,12 +759,12 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     paddingBottom: 40,
-    gap: 16,
+    gap: 18,
   },
   section: {
     backgroundColor: '#1E293B',
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: 16,
+    padding: 16,
     borderWidth: 1,
     borderColor: '#334155',
   },
@@ -669,243 +776,113 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     color: '#F8FAFC',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
   },
   sectionSubtitle: {
     color: '#94A3B8',
-    fontSize: 11,
-    marginBottom: 12,
-  },
-  fieldGroup: {
-    marginTop: 10,
-  },
-  fieldLabel: {
-    color: '#CBD5E1',
     fontSize: 12,
-    fontWeight: '600',
-    marginBottom: 6,
+    marginBottom: 14,
   },
-  keyInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  accountCard: {
     backgroundColor: '#0F172A',
-    borderRadius: 8,
+    borderRadius: 12,
+    padding: 14,
     borderWidth: 1,
     borderColor: '#334155',
   },
-  keyInput: {
-    flex: 1,
+  accountHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 10,
+  },
+  accountEmail: {
     color: '#F8FAFC',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 13,
-  },
-  eyeBtn: {
-    padding: 10,
-  },
-  selectorRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginVertical: 8,
-  },
-  modePill: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#0F172A',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  modePillActive: {
-    backgroundColor: '#4F46E5',
-    borderColor: '#818CF8',
-  },
-  modeText: {
-    color: '#94A3B8',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  modeTextActive: {
-    color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: '700',
   },
-  providerGrid: {
+  accountName: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  logoutBtn: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  logoutBtnText: {
+    color: '#EF4444',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  deviceManageRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#1E293B',
+    paddingTop: 10,
+  },
+  deviceCountBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 6,
   },
-  providerBtn: {
-    flex: 1,
-    minWidth: '45%',
-    backgroundColor: '#0F172A',
-    paddingVertical: 8,
-    borderRadius: 6,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  providerBtnActive: {
-    backgroundColor: '#38BDF8',
-    borderColor: '#7DD3FC',
-  },
-  providerText: {
-    color: '#94A3B8',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  providerTextActive: {
-    color: '#0F172A',
-    fontWeight: '800',
-  },
-  numberInput: {
-    backgroundColor: '#0F172A',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    color: '#FFFFFF',
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  textInput: {
-    backgroundColor: '#0F172A',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    color: '#FFFFFF',
-    fontSize: 13,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  helperText: {
+  deviceCountText: {
     color: '#94A3B8',
     fontSize: 11,
-    marginTop: 6,
-    lineHeight: 16,
   },
-  presetExplCard: {
-    backgroundColor: '#0F172A',
+  manageDevicesBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#1E293B',
     borderRadius: 8,
-    padding: 10,
-    marginVertical: 8,
   },
-  presetTitle: {
+  manageDevicesBtnText: {
     color: '#38BDF8',
-    fontSize: 12,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  presetItem: {
-    color: '#94A3B8',
     fontSize: 11,
-    lineHeight: 18,
+    fontWeight: '700',
   },
-  switchRow: {
+  loginBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 12,
+    backgroundColor: '#0F172A',
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    gap: 12,
   },
-  switchLabel: {
+  loginBannerTitle: {
     color: '#F8FAFC',
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
   },
-  switchDesc: {
+  loginBannerSub: {
     color: '#94A3B8',
     fontSize: 11,
     marginTop: 2,
-    paddingRight: 10,
   },
-  saveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#10B981',
-    paddingVertical: 14,
-    borderRadius: 12,
-    gap: 8,
-    marginTop: 8,
+  signInBtn: {
+    backgroundColor: '#005F73',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
   },
-  saveBtnText: {
-    color: '#FFFFFF',
-    fontSize: 15,
+  signInBtnText: {
+    color: '#FFF',
+    fontSize: 12,
     fontWeight: '700',
-  },
-  linkButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    backgroundColor: '#0B132B',
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  linkButtonText: {
-    color: '#38BDF8',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  khmerGuideCard: {
-    backgroundColor: '#0B132B',
-    borderRadius: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#1E3A8A',
-    marginBottom: 12,
-  },
-  khmerGuideHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
-  },
-  khmerGuideTitle: {
-    color: '#38BDF8',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  khmerGuideText: {
-    color: '#CBD5E1',
-    fontSize: 11,
-    lineHeight: 18,
-    marginBottom: 4,
-  },
-  boldKhmer: {
-    fontWeight: '700',
-    color: '#F8FAFC',
-  },
-  codeText: {
-    color: '#F59E0B',
-    fontFamily: 'monospace',
-    fontWeight: '600',
-  },
-  khmerTipBox: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 6,
-    backgroundColor: '#1E293B',
-    borderRadius: 6,
-    padding: 8,
-    marginTop: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: '#F59E0B',
-  },
-  khmerTipText: {
-    flex: 1,
-    color: '#94A3B8',
-    fontSize: 11,
-    lineHeight: 16,
   },
   licenseCard: {
     backgroundColor: '#0F172A',
-    borderRadius: 10,
-    padding: 12,
+    borderRadius: 12,
+    padding: 14,
     borderWidth: 1,
     borderColor: '#334155',
   },
@@ -919,32 +896,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
   },
   tierBadgeText: {
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: '800',
   },
   licenseExpiryText: {
-    fontSize: 11,
-    color: '#94A3B8',
-    fontWeight: '600',
+    color: '#10B981',
+    fontSize: 12,
+    fontWeight: '700',
   },
   licenseDetail: {
-    fontSize: 11,
     color: '#CBD5E1',
-    lineHeight: 18,
+    fontSize: 12,
+    marginTop: 3,
   },
   usageContainer: {
-    backgroundColor: '#1E293B',
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: '#334155',
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#1E293B',
   },
   usageHeaderRow: {
     flexDirection: 'row',
@@ -953,18 +924,18 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   usageTitle: {
-    fontSize: 11,
     color: '#94A3B8',
+    fontSize: 11,
     fontWeight: '600',
   },
   usageStats: {
+    color: '#F8FAFC',
     fontSize: 11,
-    color: '#38BDF8',
     fontWeight: '700',
   },
   usageBarTrack: {
     height: 8,
-    backgroundColor: '#0F172A',
+    backgroundColor: '#334155',
     borderRadius: 4,
     overflow: 'hidden',
   },
@@ -973,10 +944,9 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   usageRemainingText: {
+    color: '#64748B',
     fontSize: 10,
-    color: '#94A3B8',
-    marginTop: 6,
-    textAlign: 'right',
+    marginTop: 4,
   },
   licenseBtnRow: {
     flexDirection: 'row',
@@ -988,61 +958,243 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
-    paddingVertical: 8,
+    backgroundColor: '#1E293B',
+    paddingVertical: 9,
     borderRadius: 8,
     gap: 6,
-    borderWidth: 1,
-    borderColor: '#38BDF8',
   },
   licenseActionBtnText: {
     color: '#38BDF8',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
   },
   licenseAdminBtn: {
-    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    backgroundColor: '#1E293B',
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: '#F59E0B',
   },
   licenseAdminBtnText: {
-    color: '#F59E0B',
+    color: '#94A3B8',
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   noLicenseBox: {
     backgroundColor: '#0F172A',
-    borderRadius: 10,
-    padding: 14,
+    borderRadius: 12,
+    padding: 16,
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#334155',
   },
   noLicenseText: {
-    color: '#F87171',
+    color: '#94A3B8',
     fontSize: 12,
     textAlign: 'center',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   activateNowBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#10B981',
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    gap: 6,
+    backgroundColor: '#005F73',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
   },
   activateNowBtnText: {
-    color: '#FFFFFF',
+    color: '#FFF',
+    fontSize: 13,
     fontWeight: '700',
+  },
+  khmerGuideCard: {
+    backgroundColor: '#0F172A',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  khmerGuideHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  khmerGuideTitle: {
+    color: '#38BDF8',
     fontSize: 12,
+    fontWeight: '700',
+  },
+  khmerGuideText: {
+    color: '#CBD5E1',
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 4,
+  },
+  boldKhmer: {
+    fontWeight: '700',
+    color: '#F8FAFC',
+  },
+  codeText: {
+    color: '#F59E0B',
+    fontFamily: 'monospace',
+    fontWeight: '700',
+  },
+  khmerTipBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+    padding: 8,
+    borderRadius: 6,
+    marginTop: 6,
+  },
+  khmerTipText: {
+    color: '#FDE68A',
+    fontSize: 10,
+    flex: 1,
+    lineHeight: 14,
+  },
+  fieldGroup: {
+    marginTop: 10,
+  },
+  fieldLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 6,
+  },
+  keyInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 10,
+  },
+  keyInput: {
+    flex: 1,
+    color: '#F8FAFC',
+    paddingVertical: 10,
+    fontSize: 13,
+  },
+  eyeBtn: {
+    padding: 6,
+  },
+  linkButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
+  linkButtonText: {
+    color: '#38BDF8',
+    fontSize: 11,
+  },
+  selectorRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  modePill: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  modePillActive: {
+    borderColor: '#38BDF8',
+    backgroundColor: '#0B1E36',
+  },
+  modeText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  modeTextActive: {
+    color: '#38BDF8',
+  },
+  providerPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  providerPillActive: {
+    borderColor: '#10B981',
+    backgroundColor: '#064E3B',
+  },
+  providerText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  providerTextActive: {
+    color: '#10B981',
+  },
+  numberInput: {
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+    color: '#F8FAFC',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    width: 90,
+  },
+  textInput: {
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+    color: '#F8FAFC',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 13,
+  },
+  helperText: {
+    color: '#64748B',
+    fontSize: 10,
+    marginTop: 4,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#334155',
+  },
+  switchLabel: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  switchDesc: {
+    color: '#64748B',
+    fontSize: 10,
+    marginTop: 2,
+    paddingRight: 10,
+  },
+  saveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#005F73',
+    paddingVertical: 14,
+    borderRadius: 14,
+    gap: 8,
+  },
+  saveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });
