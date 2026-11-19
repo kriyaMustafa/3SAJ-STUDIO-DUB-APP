@@ -139,10 +139,42 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
               </TouchableOpacity>
             </View>
 
+            {/* Active Subscription Banner if user already has an active plan */}
+            {currentSubscription && (
+              <View style={styles.activeSubBanner}>
+                <View style={styles.activeSubBannerIcon}>
+                  <Crown size={16} color="#F59E0B" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.activeSubBannerTitle}>
+                    Current Plan: {currentSubscription.plan_name || currentSubscription.plan_code}
+                  </Text>
+                  <Text style={styles.activeSubBannerSub}>
+                    {currentSubscription.daily_minute_limit
+                      ? `${currentSubscription.daily_minute_limit} minutes/day (${currentSubscription.days_remaining}d remaining)`
+                      : `Unlimited minutes/day (${currentSubscription.days_remaining}d remaining)`}
+                    {' • Choose a higher plan below to upgrade instantly.'}
+                  </Text>
+                </View>
+              </View>
+            )}
+
             {/* Plans List */}
             <ScrollView style={styles.scrollArea} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
               {PLANS_CATALOG.map((plan) => {
                 const isCurrent = currentSubscription?.plan_code === plan.code;
+                const currentPlan = PLANS_CATALOG.find((p) => p.code === currentSubscription?.plan_code);
+                const currentPrice = currentPlan ? currentPlan.price : 0;
+
+                let ctaText = `Choose ${plan.name} — $${plan.price}/mo`;
+                if (isCurrent) {
+                  ctaText = 'Current Plan (Active)';
+                } else if (currentSubscription) {
+                  ctaText = plan.price > currentPrice
+                    ? `Upgrade to ${plan.name} — $${plan.price}/mo`
+                    : `Switch to ${plan.name} — $${plan.price}/mo`;
+                }
+
                 return (
                   <View
                     key={plan.code}
@@ -184,12 +216,13 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
                         styles.subscribeBtn,
                         plan.code === 'PRO' && styles.popularBtn,
                         isCurrent && styles.activePlanBtn,
+                        !isCurrent && currentSubscription && plan.price > currentPrice && styles.upgradeBtn,
                       ]}
                       disabled={isCurrent}
                       onPress={() => handleSelectPlan(plan)}
                     >
                       <Text style={[styles.subscribeBtnText, isCurrent && styles.activePlanBtnText]}>
-                        {isCurrent ? 'Current Plan (Active)' : `Choose ${plan.name} — $${plan.price}/mo`}
+                        {ctaText}
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -363,6 +396,41 @@ const styles = StyleSheet.create({
   },
   activePlanBtnText: {
     color: '#10B981',
+  },
+  upgradeBtn: {
+    backgroundColor: '#0284C7',
+  },
+  activeSubBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#1E293B',
+    marginHorizontal: 20,
+    marginTop: 12,
+    marginBottom: 4,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+  },
+  activeSubBannerIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#0F172A',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  activeSubBannerTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#F8FAFC',
+  },
+  activeSubBannerSub: {
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 2,
+    lineHeight: 15,
   },
   footerNote: {
     flexDirection: 'row',

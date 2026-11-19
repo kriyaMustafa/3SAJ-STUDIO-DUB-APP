@@ -76,35 +76,111 @@ def check_central_payment_status(payment_id: str) -> Dict[str, Any]:
         logger.error(f"Failed to query central payment status: {e}")
         return {"status": "NETWORK_ERROR", "error": str(e)}
 
-def activate_paid_subscription(conn, payment_id: str, user_id: str, plan_code: str) -> Dict[str, Any]:
+def activate_paid_subscription(conn, payment_id: str, user_id: str, plan_code: str = "PRO") -> Dict[str, Any]:
     """
-    Activates or extends subscription for 30 days upon confirmed payment.
-    Ensures zero duplicate subscriptions or activations.
+    Activates or upgrades subscription for 30 days upon confirmed payment.
+    Accurately identifies plan from payment amount or metadata.
+    Handles upgrades immediately by superseding lower tier plans.
     """
     with conn.cursor() as cur:
-        # Check if already activated for this payment_id
+        # Resolve authoritative payment row from PostgreSQL payments table (lookup by UUID or tran_id)
         cur.execute(
-            "SELECT id, plan_code, status, started_at, expires_at FROM subscriptions WHERE payment_id = %s;",
-            (payment_id,)
+            """
+            SELECT id, amount, extra_metadata
+            FROM payments
+            WHERE id = %s OR transaction_id = %s;
+            """,
+            (payment_id, payment_id)
+        )
+        payment_row = cur.fetchone()
+        real_payment_id = payment_row["id"] if payment_row else payment_id
+        real_plan_code = plan_code
+
+        if payment_row:
+            meta = payment_row.get("extra_metadata") or {}
+            if isinstance(meta, str):
+                try:
+                    import json
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            if isinstance(meta, dict) and meta.get("plan_code"):
+                real_plan_code = str(meta.get("plan_code")).upper().strip()
+            elif payment_row.get("amount") is not None:
+                amt = float(payment_row["amount"])
+                if amt >= 14.0:
+                    real_plan_code = "UNLIMITED"
+                elif amt >= 9.5:
+                    real_plan_code = "PRO_MAX"
+                elif amt >= 7.5:
+                    real_plan_code = "PRO"
+                elif amt >= 4.5:
+                    real_plan_code = "FLASH"
+
+        # Validate that plan_code exists in plans table
+        cur.execute("SELECT code, name, price_usd, daily_minute_limit FROM plans WHERE code = %s;", (real_plan_code,))
+        plan_meta = cur.fetchone()
+        if not plan_meta:
+            real_plan_code = "PRO"
+
+        # Check if already activated for this payment_id or real_payment_id
+        cur.execute(
+            """
+            SELECT id, plan_code, status, started_at, expires_at
+            FROM subscriptions
+            WHERE payment_id = %s OR payment_id = %s;
+            """,
+            (payment_id, real_payment_id)
         )
         existing_sub = cur.fetchone()
         if existing_sub:
+            # If the plan_code on the existing subscription doesn't match real_plan_code, update it
+            if existing_sub["plan_code"] != real_plan_code:
+                cur.execute(
+                    """
+                    UPDATE subscriptions
+                    SET plan_code = %s, updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING id, user_id, plan_code, payment_id, status, started_at, expires_at;
+                    """,
+                    (real_plan_code, existing_sub["id"])
+                )
+                existing_sub = cur.fetchone()
+                conn.commit()
             return {
                 "activated": True,
                 "already_active": True,
                 "subscription": existing_sub
             }
 
-        # Check existing active subscription for user (to extend if renewing early)
         now = datetime.datetime.now(datetime.timezone.utc)
         cur.execute(
-            "SELECT id, expires_at, plan_code FROM subscriptions WHERE user_id = %s AND status = 'ACTIVE' ORDER BY expires_at DESC LIMIT 1;",
+            """
+            SELECT id, expires_at, plan_code
+            FROM subscriptions
+            WHERE user_id = %s AND status = 'ACTIVE'
+            ORDER BY expires_at DESC
+            LIMIT 1;
+            """,
             (user_id,)
         )
         current_sub = cur.fetchone()
 
+        # If user is upgrading or changing plan, supersede previous active subscriptions
+        is_upgrade = current_sub and current_sub["plan_code"] != real_plan_code
+        if is_upgrade:
+            cur.execute(
+                """
+                UPDATE subscriptions
+                SET status = 'UPGRADED', updated_at = NOW()
+                WHERE user_id = %s AND status = 'ACTIVE';
+                """,
+                (user_id,)
+            )
+
         base_time = now
-        if current_sub and current_sub["expires_at"] and current_sub["expires_at"] > now:
+        # If renewing the SAME plan before expiry, extend from current expiry
+        if not is_upgrade and current_sub and current_sub["expires_at"] and current_sub["expires_at"] > now:
             base_time = current_sub["expires_at"]
 
         expires_at = base_time + datetime.timedelta(days=30)
@@ -116,7 +192,7 @@ def activate_paid_subscription(conn, payment_id: str, user_id: str, plan_code: s
             VALUES (%s, %s, %s, %s, 'ACTIVE', %s, %s, FALSE, NOW(), NOW())
             RETURNING id, user_id, plan_code, payment_id, status, started_at, expires_at;
             """,
-            (new_sub_id, user_id, plan_code, payment_id, now, expires_at)
+            (new_sub_id, user_id, real_plan_code, real_payment_id, now, expires_at)
         )
         new_sub = cur.fetchone()
         conn.commit()
@@ -124,5 +200,6 @@ def activate_paid_subscription(conn, payment_id: str, user_id: str, plan_code: s
         return {
             "activated": True,
             "already_active": False,
+            "is_upgrade": is_upgrade,
             "subscription": new_sub
         }

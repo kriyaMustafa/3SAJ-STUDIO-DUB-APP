@@ -78,16 +78,15 @@ async function processSegmentTTS(
         }
       }
 
-      // 3. Auto Time-Stretch (Fit-to-Slot)
+      // 3. Auto Time-Stretch (Fit-to-Slot): Speed up audio if longer than time slot without cutting off words
       const slotDurationMs = seg.endTime - seg.startTime;
       let finalAudioPath = chunkPath;
       let finalDurationMs = slotDurationMs;
 
-      if (settings.autoTimeStretch && slotDurationMs > 0) {
+      if (slotDurationMs > 0) {
         const stretchRes = await fitAudioToSlot(
           chunkPath,
-          slotDurationMs,
-          settings.maxAtempo || 2.0
+          slotDurationMs
         );
         finalAudioPath = stretchRes.finalPath;
         finalDurationMs = stretchRes.finalDurationMs;

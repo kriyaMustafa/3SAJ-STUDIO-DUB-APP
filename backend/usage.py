@@ -34,7 +34,7 @@ def get_user_active_subscription(conn, user_id: str) -> Optional[Dict[str, Any]]
             WHERE s.user_id = %s
               AND s.status = 'ACTIVE'
               AND s.expires_at > NOW()
-            ORDER BY s.expires_at DESC
+            ORDER BY p.price_usd DESC, s.created_at DESC
             LIMIT 1;
             """,
             (user_id,)

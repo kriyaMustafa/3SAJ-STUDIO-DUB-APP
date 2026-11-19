@@ -117,6 +117,20 @@ export default function EditorScreen() {
   const batchUnits = getBatchUnits();
   const maxSegmentId = segments.length > 0 ? segments[segments.length - 1].id : 1;
 
+  const handlePrevSegment = () => {
+    if (!segments.length) return;
+    const curIdx = activeSegment ? segments.findIndex((s) => s.id === activeSegment.id) : 0;
+    const targetIdx = Math.max(0, (curIdx >= 0 ? curIdx : 1) - 1);
+    setSeekTimeMs(segments[targetIdx].startTime);
+  };
+
+  const handleNextSegment = () => {
+    if (!segments.length) return;
+    const curIdx = activeSegment ? segments.findIndex((s) => s.id === activeSegment.id) : 0;
+    const targetIdx = Math.min(segments.length - 1, (curIdx >= 0 ? curIdx : -1) + 1);
+    setSeekTimeMs(segments[targetIdx].startTime);
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <Header
@@ -147,8 +161,11 @@ export default function EditorScreen() {
           videoUri={activeProject.videoPath}
           activeSegment={activeSegment}
           segments={segments}
+          seekToTimeMs={seekTimeMs}
           onPlaybackStatusUpdate={onPlaybackStatusUpdate}
           onSeekTo={(pos) => setSeekTimeMs(pos)}
+          onPrevSegment={handlePrevSegment}
+          onNextSegment={handleNextSegment}
         />
       </View>
 

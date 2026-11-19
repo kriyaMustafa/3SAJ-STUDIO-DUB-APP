@@ -599,9 +599,21 @@ def verify_and_activate_subscription(payment_id: str, current=Depends(get_curren
     raw_status = payment_status.get("status")
 
     if raw_status in ("PAID", "COMPLETED"):
-        # Extract plan_code from metadata or central payment details
+        # Extract plan_code from metadata, or accurately resolve from payment amount
         metadata = payment_status.get("metadata") or {}
-        plan_code = metadata.get("plan_code") or "PRO"
+        plan_code = metadata.get("plan_code")
+        if not plan_code and payment_status.get("amount") is not None:
+            amt = float(payment_status["amount"])
+            if amt >= 14.0:
+                plan_code = "UNLIMITED"
+            elif amt >= 9.5:
+                plan_code = "PRO_MAX"
+            elif amt >= 7.5:
+                plan_code = "PRO"
+            elif amt >= 4.5:
+                plan_code = "FLASH"
+        if not plan_code:
+            plan_code = "PRO"
 
         # Activate subscription
         with get_db_connection() as conn:

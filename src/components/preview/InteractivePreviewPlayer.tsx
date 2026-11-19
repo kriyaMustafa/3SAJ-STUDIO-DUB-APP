@@ -8,8 +8,9 @@ interface InteractivePreviewPlayerProps {
   videoUri: string;
   activeSegment: SubtitleSegment | null;
   segments?: SubtitleSegment[];
+  seekToTimeMs?: number | null;
   onPlaybackStatusUpdate: (status: AVPlaybackStatus) => void;
-  onSeekTo: (positionMs: number) => void;
+  onSeekTo?: (positionMs: number) => void;
   onPrevSegment?: () => void;
   onNextSegment?: () => void;
 }
@@ -18,6 +19,7 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
   videoUri,
   activeSegment,
   segments = [],
+  seekToTimeMs,
   onPlaybackStatusUpdate,
   onPrevSegment,
   onNextSegment,
@@ -30,14 +32,27 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
 
   const currentSoundRef = useRef<Audio.Sound | null>(null);
   const lastPlayedIdRef = useRef<number | null>(null);
+  const isAudioLoadingRef = useRef<boolean>(false);
+
+  // Initialize Audio mode for Android & iOS speaker output
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: false,
+      shouldDuckAndroid: false,
+      playThroughEarpieceAndroid: false,
+    }).catch((err) => console.warn('[AudioMode] Failed to init audio mode:', err));
+  }, []);
 
   const stopDubbedAudio = async () => {
     if (currentSoundRef.current) {
-      try {
-        await currentSoundRef.current.stopAsync();
-        await currentSoundRef.current.unloadAsync();
-      } catch (_) {}
+      const sound = currentSoundRef.current;
       currentSoundRef.current = null;
+      try {
+        await sound.stopAsync();
+        await sound.unloadAsync();
+      } catch (_) {}
     }
     lastPlayedIdRef.current = null;
   };
@@ -47,6 +62,15 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
       stopDubbedAudio();
     };
   }, []);
+
+  // Respond to seek commands from external interactions (e.g. segment card taps)
+  useEffect(() => {
+    if (seekToTimeMs !== null && seekToTimeMs !== undefined && videoRef.current) {
+      videoRef.current.setPositionAsync(seekToTimeMs);
+      setCurrentTimeMs(seekToTimeMs);
+      syncDubbedAudio(seekToTimeMs, isPlaying);
+    }
+  }, [seekToTimeMs]);
 
   const cycleAudioMode = async () => {
     await stopDubbedAudio();
@@ -60,10 +84,112 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
   const togglePlayPause = async () => {
     if (!videoRef.current) return;
     if (isPlaying) {
-      await stopDubbedAudio();
       await videoRef.current.pauseAsync();
+      if (currentSoundRef.current) {
+        try {
+          await currentSoundRef.current.pauseAsync();
+        } catch (_) {}
+      }
     } else {
       await videoRef.current.playAsync();
+      if (currentSoundRef.current && audioMode === 'DUBBED') {
+        try {
+          await currentSoundRef.current.playAsync();
+        } catch (_) {}
+      }
+    }
+  };
+
+  /**
+   * Precise Audio Synchronization Engine.
+   * Matches the speech timeline behavior of final video export:
+   * - Segments begin speaking at their exact startTime.
+   * - Voice plays for its full duration without being prematurely cut off.
+   * - Resumes cleanly on play/pause and resyncs if drift exceeds 150ms.
+   */
+  const syncDubbedAudio = async (pos: number, isVideoPlaying: boolean) => {
+    if (audioMode !== 'DUBBED') {
+      if (currentSoundRef.current) {
+        await stopDubbedAudio();
+      }
+      return;
+    }
+
+    if (!isVideoPlaying) {
+      if (currentSoundRef.current) {
+        try {
+          const st = await currentSoundRef.current.getStatusAsync();
+          if (st.isLoaded && st.isPlaying) {
+            await currentSoundRef.current.pauseAsync();
+          }
+        } catch (_) {}
+      }
+      return;
+    }
+
+    // Sort segments by startTime
+    const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
+
+    // Find segment whose speech slot covers current position
+    const curSeg = sorted.find((s, idx) => {
+      const nextSeg = sorted[idx + 1];
+      const speechDuration = s.durationMs && s.durationMs > 0 ? s.durationMs : Math.max(50, s.endTime - s.startTime);
+      const maxSpeechEnd = nextSeg ? Math.min(s.startTime + speechDuration, nextSeg.startTime) : (s.startTime + speechDuration);
+      return pos >= s.startTime && pos < maxSpeechEnd;
+    });
+
+    if (curSeg && curSeg.audioPath) {
+      const offsetInSegment = Math.max(0, pos - curSeg.startTime);
+
+      // Same segment audio is already loaded
+      if (lastPlayedIdRef.current === curSeg.id && currentSoundRef.current) {
+        try {
+          const st = await currentSoundRef.current.getStatusAsync();
+          if (st.isLoaded) {
+            if (!st.isPlaying) {
+              await currentSoundRef.current.setPositionAsync(offsetInSegment);
+              await currentSoundRef.current.playAsync();
+            } else {
+              // Drift detection and sample-accurate correction
+              const drift = Math.abs(st.positionMillis - offsetInSegment);
+              if (drift > 150) {
+                await currentSoundRef.current.setPositionAsync(offsetInSegment);
+              }
+            }
+          }
+        } catch (_) {}
+        return;
+      }
+
+      // New segment transition
+      if (isAudioLoadingRef.current) return;
+      isAudioLoadingRef.current = true;
+
+      try {
+        await stopDubbedAudio();
+        lastPlayedIdRef.current = curSeg.id;
+
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: curSeg.audioPath },
+          { shouldPlay: true, positionMillis: offsetInSegment, volume: 1.0 }
+        );
+        currentSoundRef.current = sound;
+
+        sound.setOnPlaybackStatusUpdate((st) => {
+          if (st.isLoaded && st.didJustFinish) {
+            lastPlayedIdRef.current = null;
+          }
+        });
+      } catch (audioErr) {
+        console.warn('[PreviewAudio] Error playing dubbed segment:', audioErr);
+      } finally {
+        isAudioLoadingRef.current = false;
+      }
+    } else {
+      // Not in any active speech segment (silence gap between subtitles)
+      if (lastPlayedIdRef.current !== null) {
+        await stopDubbedAudio();
+      }
     }
   };
 
@@ -77,45 +203,7 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
 
     onPlaybackStatusUpdate(status);
 
-    // Synchronize Khmer TTS Voice Dubbing with video timeline
-    if (audioMode === 'DUBBED') {
-      if (!status.isPlaying) {
-        await stopDubbedAudio();
-        return;
-      }
-
-      // Find current subtitle segment
-      const curSeg = segments.find(
-        (s) => pos >= s.startTime && pos < s.endTime
-      );
-
-      if (curSeg && curSeg.audioPath && curSeg.status === 'ready') {
-        if (lastPlayedIdRef.current !== curSeg.id) {
-          lastPlayedIdRef.current = curSeg.id;
-          await stopDubbedAudio();
-
-          const offsetInSegment = Math.max(0, pos - curSeg.startTime);
-
-          try {
-            const { sound } = await Audio.Sound.createAsync(
-              { uri: curSeg.audioPath },
-              { shouldPlay: true, positionMillis: offsetInSegment }
-            );
-            currentSoundRef.current = sound;
-          } catch (audioErr) {
-            console.warn('[PreviewAudio] Error playing dubbed segment:', audioErr);
-          }
-        }
-      } else {
-        if (lastPlayedIdRef.current !== null) {
-          await stopDubbedAudio();
-        }
-      }
-    } else {
-      if (currentSoundRef.current) {
-        await stopDubbedAudio();
-      }
-    }
+    await syncDubbedAudio(pos, status.isPlaying);
   };
 
   const formatTime = (ms: number) => {
@@ -136,6 +224,7 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
           resizeMode={ResizeMode.CONTAIN}
           useNativeControls={false}
           isMuted={audioMode === 'DUBBED' || audioMode === 'MUTED'}
+          progressUpdateIntervalMillis={50}
           onPlaybackStatusUpdate={handleStatusUpdate}
         />
 

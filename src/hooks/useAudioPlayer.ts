@@ -28,9 +28,17 @@ export function useAudioPlayer() {
         return;
       }
 
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: false,
+        playThroughEarpieceAndroid: false,
+      }).catch(() => {});
+
       const { sound } = await Audio.Sound.createAsync(
         { uri },
-        { shouldPlay: true }
+        { shouldPlay: true, volume: 1.0 }
       );
       soundRef.current = sound;
       setPlayingUri(uri);
