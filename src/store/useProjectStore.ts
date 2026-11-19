@@ -30,6 +30,7 @@ import { parseTranslatedBatch } from '../services/translation/batchCopyPaste';
 import { runTtsPipeline, reTtsRange, finalizeAndExportVideo } from '../services/audioPipeline';
 import { getApiKey } from '../services/secureStorage';
 import { fetchMediaFromUrl, downloadMediaAndSubtitles, ImportProgress } from '../services/urlImporterService';
+import { authService } from '../services/api/authService';
 import {
   checkAppLicense,
   checkDailyTranslationQuota,
@@ -183,14 +184,25 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           if (parsed.translationMode === 'google_free') {
             parsed.translationMode = 'byok';
           }
-          if (!parsed.backendApiUrl || parsed.backendApiUrl.includes('192.168.1.X')) {
+          if (
+            !parsed.backendApiUrl ||
+            parsed.backendApiUrl.includes('192.168.1.X') ||
+            parsed.backendApiUrl.includes('10.0.2.2') ||
+            parsed.backendApiUrl.includes('3saj-studio-dub-app.onrender.com')
+          ) {
             parsed.backendApiUrl = 'https://threesaj-studio-dub-app.onrender.com';
           }
           set((state) => ({ settings: { ...state.settings, ...parsed } }));
+          authService.setBackendUrl(parsed.backendApiUrl);
+        } else {
+          authService.setBackendUrl('https://threesaj-studio-dub-app.onrender.com');
         }
-      } catch (_) {}
+      } catch (_) {
+        authService.setBackendUrl('https://threesaj-studio-dub-app.onrender.com');
+      }
     } catch (err) {
       console.warn('initStore error during startup:', err);
+      authService.setBackendUrl('https://threesaj-studio-dub-app.onrender.com');
     }
   },
 
@@ -729,6 +741,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   updateSettings: async (partial: Partial<AppSettings>) => {
     const newSettings = { ...get().settings, ...partial };
     set({ settings: newSettings });
+    if (newSettings.backendApiUrl) {
+      authService.setBackendUrl(newSettings.backendApiUrl);
+    }
     await dbSaveSetting('app_settings', JSON.stringify(newSettings));
   },
 

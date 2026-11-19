@@ -4,7 +4,7 @@
  * keeping ABA PayWay API keys and secrets 100% server-side.
  */
 
-import { Linking } from 'react-native';
+import { Linking, Platform } from 'react-native';
 import { authService } from '../api/authService';
 
 export interface PaymentInitParams {
@@ -43,6 +43,9 @@ export class CentralPaymentClient {
    */
   async createPayment(params: PaymentInitParams): Promise<PaymentSessionResponse> {
     const token = await authService.getAccessToken();
+    const deviceId = await authService.getDeviceId();
+    const deviceName = await authService.getDeviceName();
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -50,20 +53,37 @@ export class CentralPaymentClient {
       headers.Authorization = `Bearer ${token}`;
     }
 
-    const response = await fetch(`${authService.getBackendUrl()}/api/subscriptions/checkout`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        plan_code: params.planCode,
-      }),
-    });
+    const backendUrl = authService.getBackendUrl() || 'https://threesaj-studio-dub-app.onrender.com';
+    let response: Response;
+    try {
+      response = await fetch(`${backendUrl}/api/subscriptions/checkout`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          plan_code: params.planCode,
+          device_id: deviceId,
+          device_name: deviceName,
+          platform: Platform.OS,
+        }),
+      });
+    } catch (netErr: any) {
+      throw new Error(`Could not connect to backend server at ${backendUrl}. Please check your internet connection or backend server status.`);
+    }
 
     if (!response.ok) {
-      const err = await response.json().catch(() => ({ detail: 'Network request failed' }));
+      const err = await response.json().catch(() => ({ detail: `Server returned HTTP ${response.status}` }));
       throw new Error(err.detail || err.message || `Payment creation failed (${response.status})`);
     }
 
-    return await response.json();
+    const data = await response.json();
+    if (data.tokens) {
+      await authService.storeTokens(data.tokens);
+    }
+    if (data.user) {
+      await authService.storeUserProfile(data.user);
+    }
+
+    return data;
   }
 
   /**

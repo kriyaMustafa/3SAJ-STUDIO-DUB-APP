@@ -80,7 +80,7 @@ export interface AppSettings {
   bgmMode: BGMMode;
   duckingVolume: number; // 0.12 (12%)
   demucsEndpoint: string; // e.g. "http://192.168.1.100:8000/api/separate"
-  backendApiUrl: string; // e.g. "http://192.168.1.X:8000"
+  backendApiUrl: string; // e.g. "https://threesaj-studio-dub-app.onrender.com"
   autoExport: boolean;
   workspaceDir: string;
 }

@@ -62,6 +62,9 @@ export default function ProjectDashboardScreen() {
 
   const refreshLicense = async () => {
     try {
+      if (settings?.backendApiUrl) {
+        authService.setBackendUrl(settings.backendApiUrl);
+      }
       const profile = await authService.getCurrentProfile();
       if (profile) {
         setCurrentUser(profile.user);

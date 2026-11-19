@@ -59,10 +59,12 @@ export interface AuthTokens {
   expires_in: number;
 }
 
+export const DEFAULT_BACKEND_URL = 'https://threesaj-studio-dub-app.onrender.com';
+
 export class AuthService {
   private backendBaseUrl: string;
 
-  constructor(backendBaseUrl: string = 'http://10.0.2.2:8000') {
+  constructor(backendBaseUrl: string = DEFAULT_BACKEND_URL) {
     this.backendBaseUrl = backendBaseUrl.replace(/\/$/, '');
   }
 

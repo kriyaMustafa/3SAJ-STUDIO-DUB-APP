@@ -69,7 +69,7 @@ export default function SettingsScreen() {
   const [autoTimeStretch, setAutoTimeStretch] = useState(settings.autoTimeStretch);
   const [bgmMode, setBgmMode] = useState<BGMMode>(settings.bgmMode);
   const [demucsUrl, setDemucsUrl] = useState(settings.demucsEndpoint);
-  const [backendApiUrl, setBackendApiUrl] = useState(settings.backendApiUrl || 'http://192.168.1.X:8000');
+  const [backendApiUrl, setBackendApiUrl] = useState(settings.backendApiUrl || 'https://threesaj-studio-dub-app.onrender.com');
   const [autoExport, setAutoExport] = useState(settings.autoExport);
 
   // User & Subscription state
@@ -676,13 +676,13 @@ export default function SettingsScreen() {
             style={styles.textInput}
             value={backendApiUrl}
             onChangeText={setBackendApiUrl}
-            placeholder="http://192.168.1.X:8000"
+            placeholder="https://threesaj-studio-dub-app.onrender.com"
             placeholderTextColor="#64748B"
             autoCapitalize="none"
             autoCorrect={false}
           />
           <Text style={styles.helperText}>
-            Points to your 3SAJ backend server (e.g. http://192.168.1.50:8000 or production URL).
+            Points to your 3SAJ backend server (e.g. https://threesaj-studio-dub-app.onrender.com).
           </Text>
         </View>
       </View>

@@ -103,6 +103,9 @@ class ResetPasswordRequest(BaseModel):
 
 class CheckoutRequest(BaseModel):
     plan_code: str  # FLASH, PRO, PRO_MAX, UNLIMITED
+    device_id: Optional[str] = None
+    device_name: Optional[str] = None
+    platform: Optional[str] = "android"
 
 class ReserveQuotaRequest(BaseModel):
     video_duration_seconds: int
@@ -544,22 +547,74 @@ def get_current_subscription(current=Depends(get_current_user_and_device)):
     }
 
 @app.post("/api/subscriptions/checkout")
-def create_subscription_checkout(req: CheckoutRequest, current=Depends(get_current_user_and_device)):
+def create_subscription_checkout(
+    req: CheckoutRequest,
+    authorization: Optional[str] = Header(None)
+):
     """
     Creates an ABA KHQR payment session via Central Payment API.
+    Supports both logged-in users and anonymous/guest users seamlessly.
     Returns dynamic KHQR QR string, QR base64 image, and ABA Mobile app deeplink.
     """
-    user_id = current["user_id"]
-    plan_code = req.plan_code.upper().strip()
+    user_id = None
+    tokens = None
+    user_info = None
+
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            token = authorization.split(" ")[1]
+            payload = verify_token(token, expected_type="access")
+            user_id = payload.get("sub")
+        except Exception as e:
+            logger.warning(f"Checkout token extraction warning: {e}")
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            # If not authenticated, bind or create persistent guest user based on device_id
+            if not user_id:
+                clean_device_id = req.device_id or f"guest_dev_{uuid.uuid4().hex[:12]}"
+                # Check if device is already registered
+                cur.execute(
+                    "SELECT user_id FROM user_devices WHERE device_id = %s AND is_active = TRUE ORDER BY last_active_at DESC LIMIT 1;",
+                    (clean_device_id,)
+                )
+                dev_row = cur.fetchone()
+                if dev_row:
+                    user_id = dev_row["user_id"]
+                    cur.execute("SELECT id, email, full_name FROM users WHERE id = %s;", (user_id,))
+                    user_info = cur.fetchone()
+                else:
+                    user_id = str(uuid.uuid4())
+                    guest_email = f"guest_{clean_device_id[:16]}@device.3saj.app"
+                    guest_name = req.device_name or "Android User"
+                    cur.execute(
+                        """
+                        INSERT INTO users (id, email, full_name, is_active, created_at, updated_at)
+                        VALUES (%s, %s, %s, TRUE, NOW(), NOW())
+                        RETURNING id, email, full_name;
+                        """,
+                        (user_id, guest_email, guest_name)
+                    )
+                    user_info = cur.fetchone()
+
+                # Generate access tokens for this device
+                tokens = create_tokens(user_id, user_info["email"] if user_info else f"guest_{clean_device_id[:8]}", clean_device_id)
+                register_device_session(
+                    conn=conn,
+                    user_id=user_id,
+                    device_id=clean_device_id,
+                    device_name=req.device_name or "Android Device",
+                    platform=req.platform or "android",
+                    refresh_token=tokens["refresh_token"]
+                )
+
+            plan_code = req.plan_code.upper().strip()
             cur.execute("SELECT code, name, price_usd FROM plans WHERE code = %s;", (plan_code,))
             plan = cur.fetchone()
             if not plan:
                 raise HTTPException(status_code=404, detail=f"Plan '{plan_code}' not found")
 
-    amount = float(plan["price_usd"])
+            amount = float(plan["price_usd"])
 
     # Call Central Payment API (reusing existing central payment server)
     try:
@@ -573,7 +628,7 @@ def create_subscription_checkout(req: CheckoutRequest, current=Depends(get_curre
         logger.error(f"Failed to initiate central payment: {e}")
         raise HTTPException(status_code=502, detail=f"Central payment gateway error: {str(e)}")
 
-    return {
+    resp = {
         "payment_id": payment_data.get("payment_id") or payment_data.get("id"),
         "transaction_id": payment_data.get("transaction_id"),
         "amount": amount,
@@ -586,37 +641,74 @@ def create_subscription_checkout(req: CheckoutRequest, current=Depends(get_curre
         "expires_at": payment_data.get("expires_at")
     }
 
+    if tokens:
+        resp["tokens"] = tokens
+    if user_info:
+        resp["user"] = {
+            "id": user_info["id"],
+            "email": user_info["email"],
+            "full_name": user_info["full_name"]
+        }
+
+    return resp
+
 @app.get("/api/subscriptions/verify/{payment_id}")
-def verify_and_activate_subscription(payment_id: str, current=Depends(get_current_user_and_device)):
+def verify_and_activate_subscription(
+    payment_id: str,
+    authorization: Optional[str] = Header(None)
+):
     """
     Polls Central Payment API for payment status.
     If PAID, immediately activates 30-day subscription for the user in PostgreSQL.
     """
-    user_id = current["user_id"]
+    user_id = None
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            token = authorization.split(" ")[1]
+            payload = verify_token(token, expected_type="access")
+            user_id = payload.get("sub")
+        except Exception:
+            pass
 
     # 1. Query Central Payment authoritative status
     payment_status = check_central_payment_status(payment_id)
     raw_status = payment_status.get("status")
 
     if raw_status in ("PAID", "COMPLETED"):
-        # Extract plan_code from metadata, or accurately resolve from payment amount
-        metadata = payment_status.get("metadata") or {}
-        plan_code = metadata.get("plan_code")
-        if not plan_code and payment_status.get("amount") is not None:
-            amt = float(payment_status["amount"])
-            if amt >= 14.0:
-                plan_code = "UNLIMITED"
-            elif amt >= 9.5:
-                plan_code = "PRO_MAX"
-            elif amt >= 7.5:
-                plan_code = "PRO"
-            elif amt >= 4.5:
-                plan_code = "FLASH"
-        if not plan_code:
-            plan_code = "PRO"
-
-        # Activate subscription
         with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if not user_id:
+                    # Look up customer_reference from payments table or Central Payment response
+                    cur.execute(
+                        "SELECT customer_reference FROM payments WHERE id = %s OR transaction_id = %s;",
+                        (payment_id, payment_id)
+                    )
+                    pay_row = cur.fetchone()
+                    if pay_row and pay_row["customer_reference"]:
+                        user_id = pay_row["customer_reference"]
+                    else:
+                        user_id = payment_status.get("customer_reference")
+
+            if not user_id:
+                raise HTTPException(status_code=400, detail="Cannot associate payment with a user account")
+
+            # Extract plan_code from metadata, or accurately resolve from payment amount
+            metadata = payment_status.get("metadata") or {}
+            plan_code = metadata.get("plan_code")
+            if not plan_code and payment_status.get("amount") is not None:
+                amt = float(payment_status["amount"])
+                if amt >= 14.0:
+                    plan_code = "UNLIMITED"
+                elif amt >= 9.5:
+                    plan_code = "PRO_MAX"
+                elif amt >= 7.5:
+                    plan_code = "PRO"
+                elif amt >= 4.5:
+                    plan_code = "FLASH"
+            if not plan_code:
+                plan_code = "PRO"
+
+            # Activate subscription
             activation_result = activate_paid_subscription(
                 conn=conn,
                 payment_id=payment_id,
