@@ -1,24 +1,56 @@
 import os
 import re
 import json
+import uuid
+import datetime
 import logging
-from typing import Optional
-from fastapi import FastAPI, HTTPException
+from typing import Optional, List, Dict, Any
+
+from fastapi import FastAPI, HTTPException, Depends, Header, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 import requests
 import yt_dlp
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("3saj-extractor")
-
-app = FastAPI(
-    title="3SAJ Studio Video & Subtitle Extraction API",
-    description="Backend microservice for 3SAJ Studio App to extract direct MP4 and SRT subtitles from YouTube, TikTok, Bilibili, Facebook, and more.",
-    version="1.0.0"
+from database import get_db_connection
+from auth import (
+    hash_password,
+    verify_password,
+    create_tokens,
+    verify_token,
+    hash_token,
+    get_current_user_and_device,
+    register_device_session,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS
+)
+from central_payment import (
+    create_central_payment,
+    check_central_payment_status,
+    activate_paid_subscription,
+    CENTRAL_PAYMENT_URL,
+    STUDIO_APP_API_KEY
+)
+from usage import (
+    get_cambodia_now,
+    get_cambodia_today,
+    get_seconds_until_midnight_cambodia,
+    get_user_active_subscription,
+    get_user_today_usage,
+    check_and_reserve_quota,
+    commit_quota_deduction
 )
 
-# Enable CORS for all origins (so mobile app and web clients can connect freely)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("3saj-backend")
+
+app = FastAPI(
+    title="3SAJ Studio API",
+    description="Unified Backend API for 3SAJ Studio: Auth, Device Management, Subscriptions, ABA Central Payment, Usage Enforcement, and Video Extraction.",
+    version="2.0.0"
+)
+
+# Enable CORS for mobile app, web, and emulator access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,6 +58,59 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ==============================================================================
+# SCHEMAS
+# ==============================================================================
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    full_name: Optional[str] = None
+    device_id: str
+    device_name: Optional[str] = "Android Device"
+    platform: Optional[str] = "android"
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+    device_id: str
+    device_name: Optional[str] = "Android Device"
+    platform: Optional[str] = "android"
+
+class GoogleAuthRequest(BaseModel):
+    email: str
+    google_id: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    device_id: str
+    device_name: Optional[str] = "Android Device"
+    platform: Optional[str] = "android"
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+    device_id: str
+
+class LogoutRequest(BaseModel):
+    device_id: Optional[str] = None
+
+class RevokeDeviceRequest(BaseModel):
+    device_id: str
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    new_password: str
+
+class CheckoutRequest(BaseModel):
+    plan_code: str  # FLASH, PRO, PRO_MAX, UNLIMITED
+
+class ReserveQuotaRequest(BaseModel):
+    video_duration_seconds: int
+    idempotency_token: str
+    project_id: Optional[str] = None
+
+class CommitQuotaRequest(BaseModel):
+    idempotency_token: str
 
 class ExtractRequest(BaseModel):
     url: str
@@ -38,6 +123,614 @@ class ExtractResponse(BaseModel):
     thumbnailUrl: Optional[str] = None
     durationSeconds: Optional[int] = None
 
+# ==============================================================================
+# HEALTH & CONFIG
+# ==============================================================================
+
+@app.get("/")
+@app.get("/health")
+def health_check():
+    return {
+        "status": "online",
+        "service": "3SAJ Studio Unified Backend",
+        "version": "2.0.0",
+        "central_payment_url": CENTRAL_PAYMENT_URL,
+        "features": [
+            "auth",
+            "devices_max_2",
+            "subscriptions",
+            "aba_khqr_payments",
+            "quota_enforcement",
+            "video_extraction"
+        ]
+    }
+
+# ==============================================================================
+# AUTHENTICATION ENDPOINTS
+# ==============================================================================
+
+@app.post("/api/auth/register")
+def register_user(req: RegisterRequest):
+    email = req.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email address")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if not req.device_id:
+        raise HTTPException(status_code=400, detail="Device ID is required")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # Check if user email already exists
+            cur.execute("SELECT id FROM users WHERE email = %s;", (email,))
+            existing = cur.fetchone()
+            if existing:
+                raise HTTPException(status_code=400, detail="An account with this email already exists. Please log in.")
+
+            # Create user
+            user_id = str(uuid.uuid4())
+            pw_hash = hash_password(req.password)
+            cur.execute(
+                """
+                INSERT INTO users (id, email, hashed_password, full_name, is_active, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, TRUE, NOW(), NOW())
+                RETURNING id, email, full_name;
+                """,
+                (user_id, email, pw_hash, req.full_name or email.split("@")[0])
+            )
+            user = cur.fetchone()
+
+            # Record local auth identity
+            cur.execute(
+                """
+                INSERT INTO user_auth_identities (id, user_id, provider, provider_user_id, provider_email, created_at)
+                VALUES (%s, %s, 'local', %s, %s, NOW());
+                """,
+                (str(uuid.uuid4()), user_id, email, email)
+            )
+            conn.commit()
+
+        # Generate tokens
+        tokens = create_tokens(user_id, email, req.device_id)
+
+        # Register device session (enforcing max 2 devices)
+        device = register_device_session(
+            conn=conn,
+            user_id=user_id,
+            device_id=req.device_id,
+            device_name=req.device_name or "Android Device",
+            platform=req.platform or "android",
+            refresh_token=tokens["refresh_token"]
+        )
+
+        return {
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "full_name": user["full_name"]
+            },
+            "device": device,
+            "tokens": tokens
+        }
+
+@app.post("/api/auth/login")
+def login_user(req: LoginRequest):
+    email = req.email.strip().lower()
+    if not req.device_id:
+        raise HTTPException(status_code=400, detail="Device ID is required")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, email, hashed_password, full_name, is_active FROM users WHERE email = %s;",
+                (email,)
+            )
+            user = cur.fetchone()
+            if not user or not user["hashed_password"]:
+                raise HTTPException(status_code=401, detail="Invalid email or password")
+
+            if not verify_password(req.password, user["hashed_password"]):
+                raise HTTPException(status_code=401, detail="Invalid email or password")
+
+            if not user["is_active"]:
+                raise HTTPException(status_code=403, detail="User account is suspended")
+
+        user_id = user["id"]
+        tokens = create_tokens(user_id, email, req.device_id)
+
+        # Register device session (enforcing max 2 devices)
+        device = register_device_session(
+            conn=conn,
+            user_id=user_id,
+            device_id=req.device_id,
+            device_name=req.device_name or "Android Device",
+            platform=req.platform or "android",
+            refresh_token=tokens["refresh_token"]
+        )
+
+        # Load active subscription
+        subscription = get_user_active_subscription(conn, user_id)
+
+        return {
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "full_name": user["full_name"]
+            },
+            "device": device,
+            "tokens": tokens,
+            "subscription": subscription
+        }
+
+@app.post("/api/auth/google")
+def google_auth(req: GoogleAuthRequest):
+    """
+    Google OAuth login & registration with secure account linking.
+    Resolves to the same internal user account if email already exists.
+    """
+    email = req.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid Google email required")
+    if not req.google_id:
+        raise HTTPException(status_code=400, detail="Google User ID required")
+    if not req.device_id:
+        raise HTTPException(status_code=400, detail="Device ID is required")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # 1. Check if identity already linked
+            cur.execute(
+                "SELECT user_id FROM user_auth_identities WHERE provider = 'google' AND provider_user_id = %s;",
+                (req.google_id,)
+            )
+            identity = cur.fetchone()
+
+            if identity:
+                user_id = identity["user_id"]
+                cur.execute("SELECT id, email, full_name, is_active FROM users WHERE id = %s;", (user_id,))
+                user = cur.fetchone()
+            else:
+                # 2. Check if user already exists by email
+                cur.execute("SELECT id, email, full_name, is_active FROM users WHERE email = %s;", (email,))
+                user = cur.fetchone()
+
+                if user:
+                    user_id = user["id"]
+                    # Link Google identity to existing account
+                    cur.execute(
+                        """
+                        INSERT INTO user_auth_identities (id, user_id, provider, provider_user_id, provider_email, created_at)
+                        VALUES (%s, %s, 'google', %s, %s, NOW())
+                        ON CONFLICT (provider, provider_user_id) DO NOTHING;
+                        """,
+                        (str(uuid.uuid4()), user_id, req.google_id, email)
+                    )
+                else:
+                    # 3. Create new user account
+                    user_id = str(uuid.uuid4())
+                    cur.execute(
+                        """
+                        INSERT INTO users (id, email, full_name, is_active, created_at, updated_at)
+                        VALUES (%s, %s, %s, TRUE, NOW(), NOW())
+                        RETURNING id, email, full_name;
+                        """,
+                        (user_id, email, req.full_name or email.split("@")[0])
+                    )
+                    user = cur.fetchone()
+
+                    # Link Google identity
+                    cur.execute(
+                        """
+                        INSERT INTO user_auth_identities (id, user_id, provider, provider_user_id, provider_email, created_at)
+                        VALUES (%s, %s, 'google', %s, %s, NOW());
+                        """,
+                        (str(uuid.uuid4()), user_id, req.google_id, email)
+                    )
+            conn.commit()
+
+        if not user or not user["is_active"]:
+            raise HTTPException(status_code=403, detail="User account is suspended")
+
+        tokens = create_tokens(user_id, email, req.device_id)
+
+        # Register device session (enforces max 2 devices)
+        device = register_device_session(
+            conn=conn,
+            user_id=user_id,
+            device_id=req.device_id,
+            device_name=req.device_name or "Android Device",
+            platform=req.platform or "android",
+            refresh_token=tokens["refresh_token"]
+        )
+
+        subscription = get_user_active_subscription(conn, user_id)
+
+        return {
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "full_name": user["full_name"]
+            },
+            "device": device,
+            "tokens": tokens,
+            "subscription": subscription
+        }
+
+@app.post("/api/auth/refresh")
+def refresh_access_token(req: RefreshTokenRequest):
+    """Exchanges a valid refresh token for a fresh access token."""
+    payload = verify_token(req.refresh_token, expected_type="refresh")
+    user_id = payload.get("sub")
+    device_id = payload.get("device_id")
+
+    if device_id != req.device_id:
+        raise HTTPException(status_code=401, detail="Device mismatch on refresh token")
+
+    token_hash = hash_token(req.refresh_token)
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, email, is_active FROM users WHERE id = %s;", (user_id,))
+            user = cur.fetchone()
+            if not user or not user["is_active"]:
+                raise HTTPException(status_code=401, detail="User inactive or not found")
+
+            # Validate refresh token hash matches stored device token
+            cur.execute(
+                "SELECT id, is_active FROM user_devices WHERE user_id = %s AND device_id = %s AND refresh_token_hash = %s;",
+                (user_id, device_id, token_hash)
+            )
+            device = cur.fetchone()
+            if not device or not device["is_active"]:
+                raise HTTPException(status_code=401, detail="Session expired or revoked on this device")
+
+            # Update last_active_at
+            cur.execute(
+                "UPDATE user_devices SET last_active_at = NOW() WHERE user_id = %s AND device_id = %s;",
+                (user_id, device_id)
+            )
+            conn.commit()
+
+    tokens = create_tokens(user_id, user["email"], device_id)
+    return tokens
+
+@app.post("/api/auth/logout")
+def logout_user(req: LogoutRequest, current=Depends(get_current_user_and_device)):
+    """Logs out and revokes session for the current device."""
+    user_id = current["user_id"]
+    device_id = req.device_id or current["device_id"]
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE user_devices SET is_active = FALSE, refresh_token_hash = NULL WHERE user_id = %s AND device_id = %s;",
+                (user_id, device_id)
+            )
+            conn.commit()
+
+    return {"success": True, "message": "Successfully logged out device."}
+
+@app.post("/api/auth/reset-password")
+def reset_password(req: ResetPasswordRequest):
+    email = req.email.strip().lower()
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM users WHERE email = %s;", (email,))
+            user = cur.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="No account found with this email")
+
+            pw_hash = hash_password(req.new_password)
+            cur.execute(
+                "UPDATE users SET hashed_password = %s, updated_at = NOW() WHERE id = %s;",
+                (pw_hash, user["id"])
+            )
+            # Revoke all device sessions on password reset for security
+            cur.execute(
+                "UPDATE user_devices SET is_active = FALSE, refresh_token_hash = NULL WHERE user_id = %s;",
+                (user["id"],)
+            )
+            conn.commit()
+
+    return {"success": True, "message": "Password reset successfully. Please sign in with your new password."}
+
+@app.get("/api/auth/me")
+def get_current_user_profile(current=Depends(get_current_user_and_device)):
+    """Returns current user account, device, and active subscription info."""
+    user_id = current["user_id"]
+    with get_db_connection() as conn:
+        sub = get_user_active_subscription(conn, user_id)
+        usage = get_user_today_usage(conn, user_id)
+
+    return {
+        "user": current,
+        "subscription": sub,
+        "usage_today": usage
+    }
+
+# ==============================================================================
+# DEVICE MANAGEMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/devices")
+def list_user_devices(current=Depends(get_current_user_and_device)):
+    """Returns all registered devices for the current user."""
+    user_id = current["user_id"]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, device_id, device_name, platform, is_active, last_active_at, created_at
+                FROM user_devices
+                WHERE user_id = %s
+                ORDER BY last_active_at DESC;
+                """,
+                (user_id,)
+            )
+            rows = cur.fetchall()
+
+    devices = [
+        {
+            "id": r["id"],
+            "device_id": r["device_id"],
+            "device_name": r["device_name"],
+            "platform": r["platform"],
+            "is_active": r["is_active"],
+            "is_current": r["device_id"] == current["device_id"],
+            "last_active_at": r["last_active_at"].isoformat() if r["last_active_at"] else None,
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+        for r in rows
+    ]
+    return {"devices": devices, "max_allowed": 2}
+
+@app.post("/api/devices/revoke")
+def revoke_remote_device(req: RevokeDeviceRequest, current=Depends(get_current_user_and_device)):
+    """Revokes an active device remotely so a new device can be logged in."""
+    user_id = current["user_id"]
+    target_device_id = req.device_id.strip()
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE user_devices
+                SET is_active = FALSE, refresh_token_hash = NULL
+                WHERE user_id = %s AND device_id = %s
+                RETURNING id, device_name;
+                """,
+                (user_id, target_device_id)
+            )
+            revoked = cur.fetchone()
+            conn.commit()
+
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Device not found or already revoked")
+
+    return {
+        "success": True,
+        "message": f"Device '{revoked['device_name']}' has been logged out successfully.",
+        "revoked_device_id": target_device_id
+    }
+
+# ==============================================================================
+# PLANS & SUBSCRIPTIONS (ABA CENTRAL PAYMENT)
+# ==============================================================================
+
+@app.get("/api/plans")
+def list_plans():
+    """Lists available subscription plans."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT code, name, price_usd, daily_minute_limit, max_devices FROM plans ORDER BY price_usd ASC;")
+            rows = cur.fetchall()
+    return {"plans": rows}
+
+@app.get("/api/subscriptions/current")
+def get_current_subscription(current=Depends(get_current_user_and_device)):
+    """Restores plan, expiration, and remaining quota from PostgreSQL."""
+    user_id = current["user_id"]
+    with get_db_connection() as conn:
+        sub = get_user_active_subscription(conn, user_id)
+        usage = get_user_today_usage(conn, user_id)
+
+    return {
+        "has_active_subscription": sub is not None,
+        "subscription": sub,
+        "usage_today": usage
+    }
+
+@app.post("/api/subscriptions/checkout")
+def create_subscription_checkout(req: CheckoutRequest, current=Depends(get_current_user_and_device)):
+    """
+    Creates an ABA KHQR payment session via Central Payment API.
+    Returns dynamic KHQR QR string, QR base64 image, and ABA Mobile app deeplink.
+    """
+    user_id = current["user_id"]
+    plan_code = req.plan_code.upper().strip()
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT code, name, price_usd FROM plans WHERE code = %s;", (plan_code,))
+            plan = cur.fetchone()
+            if not plan:
+                raise HTTPException(status_code=404, detail=f"Plan '{plan_code}' not found")
+
+    amount = float(plan["price_usd"])
+
+    # Call Central Payment API (reusing existing central payment server)
+    try:
+        payment_data = create_central_payment(
+            amount=amount,
+            customer_reference=user_id,
+            plan_code=plan_code,
+            plan_title=plan["name"]
+        )
+    except Exception as e:
+        logger.error(f"Failed to initiate central payment: {e}")
+        raise HTTPException(status_code=502, detail=f"Central payment gateway error: {str(e)}")
+
+    return {
+        "payment_id": payment_data.get("payment_id") or payment_data.get("id"),
+        "transaction_id": payment_data.get("transaction_id"),
+        "amount": amount,
+        "currency": "USD",
+        "plan_code": plan_code,
+        "plan_name": plan["name"],
+        "qr_string": payment_data.get("qr_string"),
+        "qr_image": payment_data.get("qr_image"),
+        "abapay_deeplink": payment_data.get("abapay_deeplink"),
+        "expires_at": payment_data.get("expires_at")
+    }
+
+@app.get("/api/subscriptions/verify/{payment_id}")
+def verify_and_activate_subscription(payment_id: str, current=Depends(get_current_user_and_device)):
+    """
+    Polls Central Payment API for payment status.
+    If PAID, immediately activates 30-day subscription for the user in PostgreSQL.
+    """
+    user_id = current["user_id"]
+
+    # 1. Query Central Payment authoritative status
+    payment_status = check_central_payment_status(payment_id)
+    raw_status = payment_status.get("status")
+
+    if raw_status in ("PAID", "COMPLETED"):
+        # Extract plan_code from metadata or central payment details
+        metadata = payment_status.get("metadata") or {}
+        plan_code = metadata.get("plan_code") or "PRO"
+
+        # Activate subscription
+        with get_db_connection() as conn:
+            activation_result = activate_paid_subscription(
+                conn=conn,
+                payment_id=payment_id,
+                user_id=user_id,
+                plan_code=plan_code
+            )
+            current_sub = get_user_active_subscription(conn, user_id)
+
+        return {
+            "success": True,
+            "status": "PAID",
+            "message": "Payment verified and subscription activated successfully!",
+            "activation": activation_result,
+            "subscription": current_sub
+        }
+    elif raw_status in ("FAILED", "EXPIRED"):
+        return {
+            "success": False,
+            "status": raw_status,
+            "message": f"Payment {raw_status.lower()}. Please try again."
+        }
+    else:
+        return {
+            "success": False,
+            "status": "PENDING",
+            "message": "Payment is still pending. Awaiting confirmation from ABA PayWay."
+        }
+
+@app.get("/api/subscriptions/history")
+def get_subscription_history(current=Depends(get_current_user_and_device)):
+    """Returns payment and subscription history for user."""
+    user_id = current["user_id"]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT s.id, s.plan_code, p.name AS plan_name, p.price_usd, s.payment_id,
+                       s.status, s.started_at, s.expires_at, s.created_at
+                FROM subscriptions s
+                JOIN plans p ON s.plan_code = p.code
+                WHERE s.user_id = %s
+                ORDER BY s.created_at DESC;
+                """,
+                (user_id,)
+            )
+            rows = cur.fetchall()
+
+    history = [
+        {
+            "id": r["id"],
+            "plan_code": r["plan_code"],
+            "plan_name": r["plan_name"],
+            "price_usd": r["price_usd"],
+            "payment_id": r["payment_id"],
+            "status": r["status"],
+            "started_at": r["started_at"].isoformat() if r["started_at"] else None,
+            "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+        for r in rows
+    ]
+    return {"history": history}
+
+# ==============================================================================
+# USAGE & QUOTA ENFORCEMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/usage/today")
+def get_daily_usage(current=Depends(get_current_user_and_device)):
+    """Retrieves usage recorded today for the user in Cambodia time (Asia/Phnom_Penh)."""
+    user_id = current["user_id"]
+    with get_db_connection() as conn:
+        sub = get_user_active_subscription(conn, user_id)
+        usage = get_user_today_usage(conn, user_id)
+
+    daily_limit = sub["daily_minute_limit"] if sub else 0
+    minutes_used = usage["minutes_used"]
+    remaining = max(0.0, round(daily_limit - minutes_used, 1)) if daily_limit is not None else None
+
+    return {
+        "date": usage["date"],
+        "plan_code": sub["plan_code"] if sub else None,
+        "daily_limit_minutes": daily_limit,
+        "minutes_used": minutes_used,
+        "minutes_remaining": remaining,
+        "seconds_until_midnight_reset": usage["seconds_until_reset"],
+        "is_unlimited": sub["is_unlimited"] if sub else False
+    }
+
+@app.post("/api/usage/reserve")
+def reserve_quota(req: ReserveQuotaRequest, current=Depends(get_current_user_and_device)):
+    """
+    Validates user's entitlement and reserves translation quota server-side.
+    Enforces daily quota reset at midnight Cambodia time.
+    Prevents duplicate usage deductions via idempotency token.
+    """
+    user_id = current["user_id"]
+    with get_db_connection() as conn:
+        result = check_and_reserve_quota(
+            conn=conn,
+            user_id=user_id,
+            video_duration_seconds=req.video_duration_seconds,
+            idempotency_token=req.idempotency_token,
+            project_id=req.project_id
+        )
+    return result
+
+@app.post("/api/usage/commit")
+def commit_quota(req: CommitQuotaRequest, current=Depends(get_current_user_and_device)):
+    """
+    Commits usage deduction upon successful translation completion.
+    Idempotent: guarantees single deduction even if client retries.
+    """
+    user_id = current["user_id"]
+    with get_db_connection() as conn:
+        result = commit_quota_deduction(
+            conn=conn,
+            user_id=user_id,
+            idempotency_token=req.idempotency_token
+        )
+    return result
+
+# ==============================================================================
+# VIDEO & SUBTITLE EXTRACTION (yt-dlp)
+# ==============================================================================
+
 def convert_vtt_to_srt(vtt_text: str) -> str:
     """Converts WebVTT format text to standard SRT format."""
     lines = vtt_text.splitlines()
@@ -45,7 +738,6 @@ def convert_vtt_to_srt(vtt_text: str) -> str:
     counter = 1
     i = 0
 
-    # Skip WEBVTT header
     while i < len(lines):
         line = lines[i].strip()
         if line.startswith("WEBVTT") or line.startswith("NOTE") or not line:
@@ -63,10 +755,8 @@ def convert_vtt_to_srt(vtt_text: str) -> str:
             i += 1
             continue
 
-        # Look for timestamp line
         match = time_pattern.search(line)
         if match:
-            # Normalize timestamp to HH:MM:SS,mmm
             parts = line.split("-->")
             start = parts[0].strip().split()[0].replace(".", ",")
             end = parts[1].strip().split()[0].replace(".", ",")
@@ -95,23 +785,12 @@ def convert_vtt_to_srt(vtt_text: str) -> str:
 
     return "\n".join(srt_lines)
 
-@app.get("/")
-@app.get("/health")
-def health_check():
-    return {
-        "status": "online",
-        "service": "3SAJ Studio Extraction Service",
-        "version": "1.0.0",
-        "supported": ["YouTube", "TikTok", "Bilibili", "Facebook", "Instagram", "Direct MP4"]
-    }
-
 @app.post("/extract", response_model=ExtractResponse)
 def extract_media(req: ExtractRequest):
     raw_url = req.url.strip()
     if not raw_url:
         raise HTTPException(status_code=400, detail="Video URL is required")
 
-    # If already a direct MP4 link
     if raw_url.lower().endswith(".mp4"):
         file_name = raw_url.split("/")[-1].replace(".mp4", "")
         return ExtractResponse(
@@ -138,7 +817,6 @@ def extract_media(req: ExtractRequest):
     if not info:
         raise HTTPException(status_code=404, detail="No media information found for this URL.")
 
-    # If it's a playlist, take the first entry
     if "entries" in info:
         entries = list(info.get("entries", []))
         if entries and entries[0]:
@@ -150,11 +828,9 @@ def extract_media(req: ExtractRequest):
     duration = info.get("duration")
     thumbnail = info.get("thumbnail")
 
-    # Find the best progressive video URL (with both video and audio)
     video_url = None
     formats = info.get("formats", [])
 
-    # Priority 1: Progressive MP4 format with audio + video (acodec != none & vcodec != none)
     progressive_mp4s = [
         f for f in formats
         if f.get("ext") == "mp4"
@@ -163,11 +839,9 @@ def extract_media(req: ExtractRequest):
         and f.get("url")
     ]
     if progressive_mp4s:
-        # Sort by resolution/height
         progressive_mp4s.sort(key=lambda x: x.get("height") or 0, reverse=True)
         video_url = progressive_mp4s[0].get("url")
 
-    # Priority 2: Any format with audio + video
     if not video_url:
         combined = [
             f for f in formats
@@ -179,19 +853,16 @@ def extract_media(req: ExtractRequest):
             combined.sort(key=lambda x: x.get("height") or 0, reverse=True)
             video_url = combined[0].get("url")
 
-    # Priority 3: Fallback to direct url in info
     if not video_url:
         video_url = info.get("url")
 
     if not video_url:
         raise HTTPException(status_code=500, detail="Could not resolve downloadable video stream URL.")
 
-    # Subtitle Extraction (Chinese, English, auto-captions)
     srt_content = None
     subtitles = info.get("subtitles") or {}
     auto_captions = info.get("automatic_captions") or {}
 
-    # Prefer human subtitles first, then automatic captions
     candidate_subs = None
     for lang in ["zh-Hans", "zh-Hant", "zh", "en", "km"]:
         if lang in subtitles:
@@ -202,7 +873,6 @@ def extract_media(req: ExtractRequest):
             first_lang = next(iter(subtitles))
             candidate_subs = subtitles[first_lang]
 
-    # Fallback to auto-captions if no manual subtitles
     if not candidate_subs:
         for lang in ["zh-Hans", "zh", "en", "km"]:
             if lang in auto_captions:
@@ -212,9 +882,7 @@ def extract_media(req: ExtractRequest):
             first_lang = next(iter(auto_captions))
             candidate_subs = auto_captions[first_lang]
 
-    # Download and parse candidate subtitle into SRT format
     if candidate_subs:
-        # Look for vtt or srt format
         vtt_entry = next((s for s in candidate_subs if s.get("ext") == "vtt"), None)
         srt_entry = next((s for s in candidate_subs if s.get("ext") == "srt"), None)
         target_sub = srt_entry or vtt_entry or candidate_subs[0]
@@ -229,9 +897,8 @@ def extract_media(req: ExtractRequest):
                     else:
                         srt_content = raw_sub
             except Exception as e:
-                logger.warn(f"Failed to download subtitles: {e}")
+                logger.warning(f"Failed to download subtitles: {e}")
 
-    # If no subtitles found at all, create a starter subtitle so the editor opens ready to dub
     if not srt_content:
         srt_content = (
             "1\n00:00:00,500 --> 00:00:05,000\n[Dialogue 1 - Tap to edit or translate]\n\n"
