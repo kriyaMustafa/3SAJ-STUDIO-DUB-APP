@@ -26,14 +26,22 @@ interface AuthModalProps {
   visible: boolean;
   onClose: () => void;
   onAuthSuccess: (user: UserProfile) => void;
+  initialTab?: 'LOGIN' | 'REGISTER';
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
   visible,
   onClose,
   onAuthSuccess,
+  initialTab = 'LOGIN',
 }) => {
-  const [tab, setTab] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
+  const [tab, setTab] = useState<'LOGIN' | 'REGISTER'>(initialTab);
+
+  React.useEffect(() => {
+    if (visible && initialTab) {
+      setTab(initialTab);
+    }
+  }, [visible, initialTab]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');

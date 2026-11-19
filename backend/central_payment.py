@@ -121,7 +121,7 @@ def activate_paid_subscription(conn, payment_id: str, user_id: str, plan_code: s
         cur.execute("SELECT code, name, price_usd, daily_minute_limit FROM plans WHERE code = %s;", (real_plan_code,))
         plan_meta = cur.fetchone()
         if not plan_meta:
-            real_plan_code = "PRO"
+            real_plan_code = plan_code or "FLASH"
 
         # Check if already activated for this payment_id or real_payment_id
         cur.execute(

@@ -39,10 +39,19 @@ export interface PaymentStatusResponse {
 export class CentralPaymentClient {
   /**
    * Creates a payment session via backend API.
-   * Keeps secret API keys strictly on the server.
+   * Keeps secret ABA PayWay keys strictly on the server.
+   * Seamlessly auto-authenticates guest sessions so payments outside Settings never fail.
    */
   async createPayment(params: PaymentInitParams): Promise<PaymentSessionResponse> {
-    const token = await authService.getValidAccessToken();
+    let token = await authService.getValidAccessToken();
+    if (!token) {
+      try {
+        token = await authService.ensureAuthenticatedSession();
+      } catch (sessErr) {
+        console.warn('ensureAuthenticatedSession warning:', sessErr);
+      }
+    }
+
     const deviceId = await authService.getDeviceId();
     const deviceName = await authService.getDeviceName();
 
@@ -55,24 +64,15 @@ export class CentralPaymentClient {
     }
 
     const backendUrl = authService.getBackendUrl() || 'https://threesaj-studio-dub-app.onrender.com';
-    let response: Response;
-    try {
-      response = await fetch(`${backendUrl}/api/subscriptions/checkout`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          plan_code: params.planCode,
-          device_id: deviceId,
-          device_name: deviceName,
-          platform: Platform.OS,
-        }),
-      });
+    let lastError: any = null;
 
-      // If token is invalid or expired (401), clean stale tokens and retry with persistent device session
-      if (response.status === 401 && token) {
-        await authService.clearTokens();
-        delete headers.Authorization;
-        response = await fetch(`${backendUrl}/api/subscriptions/checkout`, {
+    // Retry up to 2 times to handle Render free-tier cold-start wake-up
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timeoutId = controller ? setTimeout(() => controller.abort(), 28000) : null;
+
+        const response = await fetch(`${backendUrl}/api/subscriptions/checkout`, {
           method: 'POST',
           headers,
           body: JSON.stringify({
@@ -81,26 +81,71 @@ export class CentralPaymentClient {
             device_name: deviceName,
             platform: Platform.OS,
           }),
+          ...(controller ? { signal: controller.signal } : {}),
         });
+
+        if (timeoutId) clearTimeout(timeoutId);
+
+        // If 401 Unauthorized, re-authenticate fresh device session and retry
+        if (response.status === 401) {
+          const freshToken = await authService.ensureAuthenticatedSession();
+          if (freshToken) {
+            headers.Authorization = `Bearer ${freshToken}`;
+            const retryRes = await fetch(`${backendUrl}/api/subscriptions/checkout`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                plan_code: params.planCode,
+                device_id: deviceId,
+                device_name: deviceName,
+                platform: Platform.OS,
+              }),
+            });
+            if (retryRes.ok) {
+              const retryData = await retryRes.json();
+              if (retryData.tokens) await authService.storeTokens(retryData.tokens);
+              if (retryData.user) await authService.storeUserProfile(retryData.user);
+              return retryData;
+            }
+          }
+        }
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({ detail: `Server returned HTTP ${response.status}` }));
+          throw new Error(err.detail || err.message || `Payment creation failed (${response.status})`);
+        }
+
+        const data = await response.json();
+        if (data.tokens) {
+          await authService.storeTokens(data.tokens);
+        }
+        if (data.user) {
+          await authService.storeUserProfile(data.user);
+        }
+
+        return data;
+      } catch (err: any) {
+        lastError = err;
+        if (attempt === 1) {
+          // Brief pause before second attempt if server is waking up
+          await new Promise((r) => setTimeout(r, 1500));
+        }
       }
-    } catch (netErr: any) {
-      throw new Error(`Could not connect to backend server at ${backendUrl}. Please check your internet connection or backend server status.`);
     }
 
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({ detail: `Server returned HTTP ${response.status}` }));
-      throw new Error(err.detail || err.message || `Payment creation failed (${response.status})`);
+    const isNetworkErr =
+      lastError?.name === 'AbortError' ||
+      !lastError?.message ||
+      lastError.message.includes('Network request failed') ||
+      lastError.message.includes('Failed to fetch');
+
+    if (isNetworkErr) {
+      throw new Error(
+        `Unable to connect to payment server at ${backendUrl}. The backend server may be waking up or your internet connection is unstable. Please tap Retry in a few seconds.`
+      );
     }
 
-    const data = await response.json();
-    if (data.tokens) {
-      await authService.storeTokens(data.tokens);
-    }
-    if (data.user) {
-      await authService.storeUserProfile(data.user);
-    }
-
-    return data;
+    throw lastError;
   }
 
   /**

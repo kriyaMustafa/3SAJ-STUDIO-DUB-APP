@@ -55,17 +55,22 @@ export async function muxVideoWithAudio(
         if (status === 'granted') {
           const cleanUri = outputPath.startsWith('file://') ? outputPath : `file://${outputPath}`;
           const asset = await MediaLibrary.createAssetAsync(cleanUri);
-          const albumName = '3SAJ STUDIO';
-          const album = await MediaLibrary.getAlbumAsync(albumName);
-          if (album === null) {
-            // copyAsset: true physically copies the MP4 to public Movies/3SAJ STUDIO on Android storage!
-            await MediaLibrary.createAlbumAsync(albumName, asset, true);
-          } else {
-            await MediaLibrary.addAssetsToAlbumAsync([asset], album, true);
+          if (asset && asset.uri) {
+            savedToGallery = true;
+            const fileName = outputPath.split('/').pop() || 'dubbed_video.mp4';
+            publicPath = `Gallery / Movies (${fileName})`;
+            try {
+              const albumName = '3SAJ STUDIO';
+              const album = await MediaLibrary.getAlbumAsync(albumName);
+              if (album === null) {
+                await MediaLibrary.createAlbumAsync(albumName, asset, false);
+              } else {
+                await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+              }
+            } catch (albumErr) {
+              console.log('[VideoMuxer] Album organization fallback:', albumErr);
+            }
           }
-          savedToGallery = true;
-          const fileName = outputPath.split('/').pop() || 'dubbed_video.mp4';
-          publicPath = `Movies/${albumName}/${fileName}`;
         }
       } catch (mediaErr) {
         console.warn('[VideoMuxer] MediaLibrary permission or save error:', mediaErr);

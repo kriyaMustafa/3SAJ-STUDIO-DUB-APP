@@ -119,7 +119,7 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
 
             // Verify with backend to activate subscription in Neon DB
             try {
-              const verifyRes = await authService.verifySubscriptionPayment(paymentId);
+              const verifyRes = await authService.verifySubscriptionPayment(paymentId, planCode);
               const activeSub = verifyRes.subscription;
               // Automatically return back to the app after 1.5 seconds
               setTimeout(() => {

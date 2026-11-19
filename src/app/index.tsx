@@ -28,14 +28,17 @@ import {
   Award,
   Crown,
   CreditCard,
+  Download,
 } from 'lucide-react-native';
 import { useProjectStore } from '../store/useProjectStore';
 import { Project } from '../types/project';
 import { ImportFromUrlModal } from '../components/modals/ImportFromUrlModal';
 import { SubscriptionPricingModal } from '../components/modals/SubscriptionPricingModal';
+import { AuthModal } from '../components/modals/AuthModal';
 import { checkAppLicense } from '../services/licenseService';
 import { authService, SubscriptionInfo, UserProfile } from '../services/api/authService';
 import { LicenseStatus, TIER_CONFIGS } from '../types/license';
+import { videoSaveService } from '../services/videoSaveService';
 
 export default function ProjectDashboardScreen() {
   const router = useRouter();
@@ -52,6 +55,8 @@ export default function ProjectDashboardScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [urlModalVisible, setUrlModalVisible] = useState(false);
   const [pricingModalVisible, setPricingModalVisible] = useState(false);
+  const [authModalVisible, setAuthModalVisible] = useState(false);
+  const [authInitialTab, setAuthInitialTab] = useState<'LOGIN' | 'REGISTER'>('REGISTER');
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [currentSub, setCurrentSub] = useState<SubscriptionInfo | null>(null);
   const [projectName, setProjectName] = useState('');
@@ -59,6 +64,27 @@ export default function ProjectDashboardScreen() {
   const [srtFile, setSrtFile] = useState<{ uri: string; name: string } | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [licenseInfo, setLicenseInfo] = useState<LicenseStatus | null>(null);
+
+  const handleOpenBuyPlan = () => {
+    if (!currentUser) {
+      Alert.alert(
+        '📝 Account Registration Required',
+        'Please register or sign in first to subscribe to a 3SAJ Studio plan. Your subscription will be safely tied to your account across your devices.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Register / Sign In',
+            onPress: () => {
+              setAuthInitialTab('REGISTER');
+              setAuthModalVisible(true);
+            },
+          },
+        ]
+      );
+      return;
+    }
+    setPricingModalVisible(true);
+  };
 
   const refreshLicense = async () => {
     try {
@@ -234,7 +260,7 @@ export default function ProjectDashboardScreen() {
                 styles.headerPlanBadge,
                 { borderColor: TIER_CONFIGS[licenseInfo.license.tier]?.badgeColor || '#38BDF8' },
               ]}
-              onPress={() => setPricingModalVisible(true)}
+              onPress={handleOpenBuyPlan}
             >
               {licenseInfo.license.tier === 'FLASH' && <Zap size={13} color="#F59E0B" />}
               {licenseInfo.license.tier === 'PRO' && <Award size={13} color="#38BDF8" />}
@@ -253,7 +279,7 @@ export default function ProjectDashboardScreen() {
           ) : (
             <TouchableOpacity
               style={styles.headerBuyBtn}
-              onPress={() => setPricingModalVisible(true)}
+              onPress={handleOpenBuyPlan}
             >
               <CreditCard size={13} color="#FFF" style={{ marginRight: 4 }} />
               <Text style={styles.headerBuyBtnText}>Buy Plan</Text>
@@ -305,7 +331,7 @@ export default function ProjectDashboardScreen() {
       {(!licenseInfo?.isValid || !licenseInfo.license) && (
         <TouchableOpacity
           style={styles.subscribeBanner}
-          onPress={() => setPricingModalVisible(true)}
+          onPress={handleOpenBuyPlan}
           activeOpacity={0.88}
         >
           <View style={styles.subscribeBannerLeft}>
@@ -439,6 +465,16 @@ export default function ProjectDashboardScreen() {
 
             {/* Bottom Actions */}
             <View style={styles.cardBottomRow}>
+              {item.isExported && item.exportPath && (
+                <TouchableOpacity
+                  style={styles.saveVideoBtn}
+                  onPress={() => videoSaveService.promptVideoActions(item.exportPath!, item.name)}
+                >
+                  <Download size={14} color="#10B981" />
+                  <Text style={styles.saveVideoBtnText}>Save Video</Text>
+                </TouchableOpacity>
+              )}
+
               <TouchableOpacity
                 style={styles.cleanBtn}
                 onPress={() => handleCleanupCache(item)}
@@ -549,7 +585,7 @@ export default function ProjectDashboardScreen() {
         visible={urlModalVisible}
         onClose={() => setUrlModalVisible(false)}
         onImport={importFromUrlAndTranslate}
-        onRequestSubscription={() => setPricingModalVisible(true)}
+        onRequestSubscription={handleOpenBuyPlan}
         onSuccess={(newProjectId) => {
           router.push(`/editor/${newProjectId}`);
         }}
@@ -564,6 +600,20 @@ export default function ProjectDashboardScreen() {
         onSubscriptionUpdated={async (newSub) => {
           setCurrentSub(newSub);
           await refreshLicense();
+        }}
+      />
+
+      {/* Auth & Account Registration Modal */}
+      <AuthModal
+        visible={authModalVisible}
+        initialTab={authInitialTab}
+        onClose={() => setAuthModalVisible(false)}
+        onAuthSuccess={async (user) => {
+          setCurrentUser(user);
+          setAuthModalVisible(false);
+          await refreshLicense();
+          // Automatically open subscription plan options once signed in / registered
+          setPricingModalVisible(true);
         }}
       />
     </SafeAreaView>
@@ -976,6 +1026,22 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#334155',
     paddingTop: 10,
+  },
+  saveVideoBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderWidth: 1,
+    borderColor: '#10B981',
+  },
+  saveVideoBtnText: {
+    color: '#10B981',
+    fontSize: 11,
+    fontWeight: '700',
   },
   cleanBtn: {
     flexDirection: 'row',

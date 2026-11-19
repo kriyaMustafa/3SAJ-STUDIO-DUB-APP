@@ -117,6 +117,26 @@ export default function SettingsScreen() {
   const [pricingModalVisible, setPricingModalVisible] = useState(false);
   const [devicesModalVisible, setDevicesModalVisible] = useState(false);
 
+  const handleOpenBuyPlan = () => {
+    if (!currentUser) {
+      Alert.alert(
+        '📝 Account Registration Required',
+        'Please register or sign in first to subscribe to a 3SAJ Studio plan. Your subscription will be safely tied to your account across your devices.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Register / Sign In',
+            onPress: () => {
+              setAuthModalVisible(true);
+            },
+          },
+        ]
+      );
+      return;
+    }
+    setPricingModalVisible(true);
+  };
+
   const refreshProfileAndSubscription = async () => {
     try {
       if (settings.backendApiUrl) {
@@ -390,7 +410,7 @@ export default function SettingsScreen() {
             <View style={styles.licenseBtnRow}>
               <TouchableOpacity
                 style={styles.licenseActionBtn}
-                onPress={() => setPricingModalVisible(true)}
+                onPress={handleOpenBuyPlan}
               >
                 <CreditCard size={14} color="#38BDF8" />
                 <Text style={styles.licenseActionBtnText}>Upgrade / Renew Plan</Text>
@@ -404,7 +424,7 @@ export default function SettingsScreen() {
             </Text>
             <TouchableOpacity
               style={styles.activateNowBtn}
-              onPress={() => setPricingModalVisible(true)}
+              onPress={handleOpenBuyPlan}
             >
               <CreditCard size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
               <Text style={styles.activateNowBtnText}>Choose Subscription Plan</Text>

@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
+  Alert,
 } from 'react-native';
 import {
   X,
@@ -116,6 +117,13 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
   const [checkoutVisible, setCheckoutVisible] = useState(false);
 
   const handleSelectPlan = (plan: PlanOption, amountToCharge: number) => {
+    if (!userId || userId === 'anonymous_user') {
+      Alert.alert(
+        '📝 Account Registration Required',
+        'Please register or sign in first to select and pay for a subscription plan.'
+      );
+      return;
+    }
     setSelectedPlan(plan);
     setSelectedAmount(amountToCharge);
     setCheckoutVisible(true);

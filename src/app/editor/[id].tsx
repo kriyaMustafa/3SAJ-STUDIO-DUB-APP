@@ -32,6 +32,7 @@ import { GlossaryModal } from '../../components/modals/GlossaryModal';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { useVideoSync } from '../../hooks/useVideoSync';
 import { Gender, AgeTone } from '../../types/project';
+import { videoSaveService } from '../../services/videoSaveService';
 
 export default function EditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -104,47 +105,8 @@ export default function EditorScreen() {
             const res = await exportFinalVideo();
             if (res.success && res.path) {
               const videoPath = res.path;
-              const displayPublic = (res as any).publicPath || 'Movies/3SAJ STUDIO';
-              Alert.alert(
-                '🎉 Export Complete!',
-                `Video rendered with zero watermarks and saved to your phone's Gallery & File Manager:\n\n📁 ${displayPublic}\n\nInternal file:\n${videoPath}`,
-                [
-                  { text: 'Done', style: 'cancel' },
-                  {
-                    text: 'Share / Send',
-                    onPress: async () => {
-                      try {
-                        await Share.share({
-                          title: '3SAJ Studio Dubbed Video',
-                          message: `Khmer dubbed video: ${videoPath}`,
-                          url: videoPath,
-                        });
-                      } catch (e) {
-                        console.warn('Share error:', e);
-                      }
-                    },
-                  },
-                  {
-                    text: 'Open Video',
-                    onPress: async () => {
-                      try {
-                        const canOpen = await Linking.canOpenURL(videoPath);
-                        if (canOpen) {
-                          await Linking.openURL(videoPath);
-                        } else {
-                          await Share.share({
-                            title: '3SAJ Studio Dubbed Video',
-                            message: videoPath,
-                            url: videoPath,
-                          });
-                        }
-                      } catch (e) {
-                        console.warn('Open error:', e);
-                      }
-                    },
-                  },
-                ]
-              );
+              // Prompt user directly with options to Save to Gallery, Download to Folder, or Share
+              videoSaveService.promptVideoActions(videoPath, activeProject?.name || 'dubbed_video');
             } else {
               Alert.alert('Export Failed', res.error || 'Unknown rendering error.');
             }
@@ -178,20 +140,46 @@ export default function EditorScreen() {
         subtitle={`${segments.length} Subtitle Segments`}
         onBack={() => router.back()}
         rightAction={
-          <TouchableOpacity
-            style={styles.exportHeaderBtn}
-            onPress={handleExport}
-            disabled={isExporting}
-          >
-            {isExporting ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            ) : (
-              <>
-                <Download size={16} color="#FFFFFF" />
-                <Text style={styles.exportHeaderText}>Export</Text>
-              </>
-            )}
-          </TouchableOpacity>
+          activeProject.isExported && activeProject.exportPath ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <TouchableOpacity
+                style={styles.saveHeaderBtn}
+                onPress={() => videoSaveService.promptVideoActions(activeProject.exportPath!, activeProject.name)}
+              >
+                <Download size={14} color="#FFFFFF" />
+                <Text style={styles.exportHeaderText}>Save Video</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.reExportHeaderBtn}
+                onPress={handleExport}
+                disabled={isExporting}
+              >
+                {isExporting ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Share2 size={13} color="#FFFFFF" />
+                    <Text style={styles.exportHeaderText}>Re-Export</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={styles.exportHeaderBtn}
+              onPress={handleExport}
+              disabled={isExporting}
+            >
+              {isExporting ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Download size={16} color="#FFFFFF" />
+                  <Text style={styles.exportHeaderText}>Export</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )
         }
       />
 
@@ -346,6 +334,24 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 8,
     gap: 6,
+  },
+  saveHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0D9488',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    gap: 5,
+  },
+  reExportHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#475569',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    gap: 5,
   },
   exportHeaderText: {
     color: '#FFFFFF',

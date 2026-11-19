@@ -736,6 +736,7 @@ def create_subscription_checkout(
 @app.get("/api/subscriptions/verify/{payment_id}")
 def verify_and_activate_subscription(
     payment_id: str,
+    plan_code: Optional[str] = None,
     authorization: Optional[str] = Header(None)
 ):
     """
@@ -776,7 +777,7 @@ def verify_and_activate_subscription(
                 if not target_user_id:
                     raise HTTPException(status_code=400, detail="Cannot associate payment with a user account")
 
-                # 2. Retrieve authoritative plan_code from payments.extra_metadata!
+                # 2. Retrieve authoritative plan_code from payments.extra_metadata or query/amount
                 resolved_plan_code = None
                 if pay_row and pay_row.get("extra_metadata"):
                     meta = pay_row["extra_metadata"]
@@ -794,8 +795,30 @@ def verify_and_activate_subscription(
                     if isinstance(meta, dict) and meta.get("plan_code"):
                         resolved_plan_code = str(meta["plan_code"]).upper().strip()
 
+                if not resolved_plan_code and plan_code:
+                    clean_code = str(plan_code).upper().strip()
+                    if clean_code in ("FLASH", "PRO", "PRO_MAX", "UNLIMITED"):
+                        resolved_plan_code = clean_code
+
                 if not resolved_plan_code:
-                    resolved_plan_code = "PRO"
+                    check_amt = None
+                    if pay_row and pay_row.get("amount") is not None:
+                        check_amt = float(pay_row["amount"])
+                    elif payment_status.get("amount") is not None:
+                        check_amt = float(payment_status["amount"])
+
+                    if check_amt is not None:
+                        if check_amt >= 14.0:
+                            resolved_plan_code = "UNLIMITED"
+                        elif check_amt >= 9.5:
+                            resolved_plan_code = "PRO_MAX"
+                        elif check_amt >= 7.0:
+                            resolved_plan_code = "PRO"
+                        else:
+                            resolved_plan_code = "FLASH"
+
+                if not resolved_plan_code:
+                    resolved_plan_code = "FLASH"
 
             # 3. Activate subscription with authoritative plan code
             activation_result = activate_paid_subscription(
