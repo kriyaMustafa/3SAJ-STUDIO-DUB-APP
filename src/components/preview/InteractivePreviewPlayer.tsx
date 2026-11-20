@@ -35,6 +35,7 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
   const isAudioLoadingRef = useRef<boolean>(false);
   const isUnmountedRef = useRef<boolean>(false);
   const syncMutexRef = useRef<boolean>(false);
+  const loadSequenceRef = useRef<number>(0);
 
   // Memoize sorted segments so we never re-sort on every player tick
   const sortedSegments = useMemo(() => {
@@ -54,9 +55,13 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
 
   const stopDubbedAudio = async () => {
     lastPlayedIdRef.current = null;
+    loadSequenceRef.current++;
     if (currentSoundRef.current) {
       const sound = currentSoundRef.current;
       currentSoundRef.current = null;
+      try {
+        sound.setOnPlaybackStatusUpdate(null);
+      } catch (_) {}
       try {
         await sound.stopAsync();
       } catch (_) {}
@@ -70,10 +75,12 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
     isUnmountedRef.current = false;
     return () => {
       isUnmountedRef.current = true;
+      loadSequenceRef.current++;
       if (videoRef.current) {
         try {
+          // Pause only. Do NOT call unloadAsync() here - expo-av releases native ExoPlayer
+          // automatically on view teardown. Calling unloadAsync triggers native SimpleExoPlayer SIGSEGV/NPE!
           videoRef.current.pauseAsync().catch(() => {});
-          videoRef.current.unloadAsync().catch(() => {});
         } catch (_) {}
       }
       stopDubbedAudio().catch(() => {});
@@ -179,10 +186,11 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
         // New segment transition: serialize audio instantiation safely
         if (isAudioLoadingRef.current) return;
         isAudioLoadingRef.current = true;
+        const currentSeq = ++loadSequenceRef.current;
 
         try {
           await stopDubbedAudio();
-          if (isUnmountedRef.current) return;
+          if (isUnmountedRef.current || currentSeq !== loadSequenceRef.current) return;
 
           lastPlayedIdRef.current = curSeg.id;
 
@@ -191,8 +199,11 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
             { shouldPlay: true, positionMillis: offsetInSegment, volume: 1.0 }
           );
 
-          if (isUnmountedRef.current) {
-            sound.unloadAsync().catch(() => {});
+          if (isUnmountedRef.current || currentSeq !== loadSequenceRef.current) {
+            try {
+              sound.setOnPlaybackStatusUpdate(null);
+              await sound.unloadAsync();
+            } catch (_) {}
             return;
           }
 
@@ -244,17 +255,26 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
     <View style={styles.container}>
       {/* Video View */}
       <View style={styles.videoWrapper}>
-        <Video
-          ref={videoRef}
-          source={{ uri: videoUri }}
-          style={styles.video}
-          resizeMode={ResizeMode.CONTAIN}
-          useNativeControls={false}
-          isMuted={audioMode === 'DUBBED' || audioMode === 'MUTED'}
-          progressUpdateIntervalMillis={200}
-          onPlaybackStatusUpdate={handleStatusUpdate}
-          onError={(err) => console.warn('[VideoPreview] Playback error:', err)}
-        />
+        {videoUri ? (
+          <Video
+            ref={videoRef}
+            source={{ uri: videoUri }}
+            style={styles.video}
+            resizeMode={ResizeMode.CONTAIN}
+            useNativeControls={false}
+            isMuted={audioMode === 'DUBBED' || audioMode === 'MUTED'}
+            progressUpdateIntervalMillis={200}
+            onPlaybackStatusUpdate={handleStatusUpdate}
+            onError={(err) => {
+              console.warn('[VideoPreview] Playback error:', err);
+              setIsPlaying(false);
+            }}
+          />
+        ) : (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ color: '#94A3B8', fontSize: 13 }}>No video source available</Text>
+          </View>
+        )}
 
         {/* Audio Mode Badge in Top-Right Corner */}
         <TouchableOpacity

@@ -373,11 +373,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const { activeProject, segments } = get();
     if (!activeProject) return;
 
+    // Optimistic UI update: immediately reflects change in memory for 0ms lag
     const updated = segments.map((s) => (s.id === id ? { ...s, ...partial } : s));
     const target = updated.find((s) => s.id === id);
     if (target) {
-      await dbUpdateSegment(activeProject.id, target);
       set({ segments: updated });
+      // Asynchronously persist to SQLite in background
+      dbUpdateSegment(activeProject.id, target).catch((err) => {
+        console.warn('[updateSegment] Background save failed:', err);
+      });
     }
   },
 

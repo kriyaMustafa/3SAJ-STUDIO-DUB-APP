@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Share,
   Linking,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -31,36 +32,57 @@ import { BatchCopyPasteModal } from '../../components/modals/BatchCopyPasteModal
 import { GlossaryModal } from '../../components/modals/GlossaryModal';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { useVideoSync } from '../../hooks/useVideoSync';
-import { Gender, AgeTone } from '../../types/project';
+import { Gender, AgeTone, SubtitleSegment } from '../../types/project';
 import { videoSaveService } from '../../services/videoSaveService';
+
+/**
+ * Isolated progress bar component to prevent progress tick updates from
+ * re-rendering the entire 500-segment editor list and preview player.
+ */
+const EditorProgress = React.memo(() => {
+  const isTranslating = useProjectStore((s) => s.isTranslating);
+  const isSynthesizing = useProjectStore((s) => s.isSynthesizing);
+  const progress = useProjectStore((s) => s.progress);
+  const cancelOperation = useProjectStore((s) => s.cancelOperation);
+
+  if (!isTranslating && !isSynthesizing) return null;
+
+  return (
+    <View style={styles.progressWrapper}>
+      <ProgressBar
+        completed={progress.completed}
+        total={progress.total}
+        statusText={progress.statusText}
+        onCancel={cancelOperation}
+      />
+    </View>
+  );
+});
 
 export default function EditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
 
-  const {
-    activeProject,
-    segments,
-    glossary,
-    settings,
-    isTranslating,
-    isSynthesizing,
-    isExporting,
-    progress,
-    selectProject,
-    updateSegment,
-    startTranslation,
-    startTtsSynthesis,
-    cancelOperation,
-    applyPastedBatch,
-    repairRangeTranslation,
-    repairRangeTts,
-    repairRangeManual,
-    exportFinalVideo,
-    addGlossaryItem,
-    removeGlossaryItem,
-    getBatchUnits,
-  } = useProjectStore();
+  const activeProject = useProjectStore((s) => s.activeProject);
+  const segments = useProjectStore((s) => s.segments);
+  const glossary = useProjectStore((s) => s.glossary);
+  const settings = useProjectStore((s) => s.settings);
+  const isTranslating = useProjectStore((s) => s.isTranslating);
+  const isSynthesizing = useProjectStore((s) => s.isSynthesizing);
+  const isExporting = useProjectStore((s) => s.isExporting);
+
+  const selectProject = useProjectStore((s) => s.selectProject);
+  const updateSegment = useProjectStore((s) => s.updateSegment);
+  const startTranslation = useProjectStore((s) => s.startTranslation);
+  const startTtsSynthesis = useProjectStore((s) => s.startTtsSynthesis);
+  const applyPastedBatch = useProjectStore((s) => s.applyPastedBatch);
+  const repairRangeTranslation = useProjectStore((s) => s.repairRangeTranslation);
+  const repairRangeTts = useProjectStore((s) => s.repairRangeTts);
+  const repairRangeManual = useProjectStore((s) => s.repairRangeManual);
+  const exportFinalVideo = useProjectStore((s) => s.exportFinalVideo);
+  const addGlossaryItem = useProjectStore((s) => s.addGlossaryItem);
+  const removeGlossaryItem = useProjectStore((s) => s.removeGlossaryItem);
+  const getBatchUnits = useProjectStore((s) => s.getBatchUnits);
 
   const { isPlaying, playingUri, playAudio, stopAudio } = useAudioPlayer();
   const { activeSegment, onPlaybackStatusUpdate } = useVideoSync(segments);
@@ -76,6 +98,56 @@ export default function EditorScreen() {
     }
   }, [id, activeProject, selectProject]);
 
+  const handleUpdateText = useCallback(
+    async (segId: number, text: string) => {
+      await updateSegment(segId, { translatedText: text, status: 'translated' });
+    },
+    [updateSegment]
+  );
+
+  const handleUpdateTags = useCallback(
+    async (segId: number, gender: Gender, ageTone: AgeTone) => {
+      await updateSegment(segId, { gender, ageTone });
+    },
+    [updateSegment]
+  );
+
+  const handlePlayAudio = useCallback(
+    (path: string) => {
+      playAudio(path);
+    },
+    [playAudio]
+  );
+
+  const handleSeekToSegment = useCallback((ms: number) => {
+    setSeekTimeMs(ms);
+  }, []);
+
+  const renderSegmentCard = useCallback(
+    ({ item }: { item: SubtitleSegment }) => (
+      <SegmentCard
+        segment={item}
+        isActive={activeSegment?.id === item.id}
+        isPlayingAudio={isPlaying && playingUri === item.audioPath}
+        onPlayAudio={handlePlayAudio}
+        onStopAudio={stopAudio}
+        onUpdateText={handleUpdateText}
+        onUpdateTags={handleUpdateTags}
+        onSeekToSegment={handleSeekToSegment}
+      />
+    ),
+    [
+      activeSegment?.id,
+      isPlaying,
+      playingUri,
+      handlePlayAudio,
+      stopAudio,
+      handleUpdateText,
+      handleUpdateTags,
+      handleSeekToSegment,
+    ]
+  );
+
   if (!activeProject) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
@@ -84,14 +156,6 @@ export default function EditorScreen() {
       </SafeAreaView>
     );
   }
-
-  const handleUpdateText = async (segId: number, text: string) => {
-    await updateSegment(segId, { translatedText: text, status: 'translated' });
-  };
-
-  const handleUpdateTags = async (segId: number, gender: Gender, ageTone: AgeTone) => {
-    await updateSegment(segId, { gender, ageTone });
-  };
 
   const handleExport = async () => {
     Alert.alert(
@@ -197,17 +261,8 @@ export default function EditorScreen() {
         />
       </View>
 
-      {/* Progress Bar (Visible during Translation or TTS Synthesis) */}
-      {(isTranslating || isSynthesizing) && (
-        <View style={styles.progressWrapper}>
-          <ProgressBar
-            completed={progress.completed}
-            total={progress.total}
-            statusText={progress.statusText}
-            onCancel={cancelOperation}
-          />
-        </View>
-      )}
+      {/* Isolated Progress Bar (Only re-renders on percentage ticks without re-rendering editor) */}
+      <EditorProgress />
 
       {/* Floating Action Strip */}
       <View style={styles.actionStrip}>
@@ -264,20 +319,9 @@ export default function EditorScreen() {
         contentContainerStyle={styles.listContent}
         initialNumToRender={8}
         maxToRenderPerBatch={10}
-        windowSize={7}
-        removeClippedSubviews={true}
-        renderItem={({ item }) => (
-          <SegmentCard
-            segment={item}
-            isActive={activeSegment?.id === item.id}
-            isPlayingAudio={isPlaying && playingUri === item.audioPath}
-            onPlayAudio={(path) => playAudio(path)}
-            onStopAudio={stopAudio}
-            onUpdateText={handleUpdateText}
-            onUpdateTags={handleUpdateTags}
-            onSeekToSegment={(ms) => setSeekTimeMs(ms)}
-          />
-        )}
+        windowSize={5}
+        removeClippedSubviews={Platform.OS === 'android'}
+        renderItem={renderSegmentCard}
       />
 
       {/* Modals */}

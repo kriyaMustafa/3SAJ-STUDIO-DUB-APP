@@ -85,12 +85,18 @@ def verify_token(token: str, expected_type: str = "access") -> Dict[str, Any]:
 
 def get_current_user_and_device(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
     """FastAPI dependency to extract current user and device from Bearer token."""
-    if not authorization or not authorization.startswith("Bearer "):
+    if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or malformed Authorization header"
         )
-    raw_token = authorization.split(" ")[1]
+    parts = authorization.split(" ", 1)
+    if len(parts) < 2 or not parts[1].strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing token in Authorization header"
+        )
+    raw_token = parts[1].strip()
     payload = verify_token(raw_token, expected_type="access")
     user_id = payload.get("sub")
     device_id = payload.get("device_id")

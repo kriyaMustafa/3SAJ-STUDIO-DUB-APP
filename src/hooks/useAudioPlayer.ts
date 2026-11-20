@@ -9,7 +9,11 @@ export function useAudioPlayer() {
   useEffect(() => {
     return () => {
       if (soundRef.current) {
+        try {
+          soundRef.current.setOnPlaybackStatusUpdate(null);
+        } catch (_) {}
         soundRef.current.unloadAsync().catch(() => {});
+        soundRef.current = null;
       }
     };
   }, []);
@@ -17,9 +21,17 @@ export function useAudioPlayer() {
   const playAudio = async (uri: string) => {
     try {
       if (soundRef.current) {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
+        const prev = soundRef.current;
         soundRef.current = null;
+        try {
+          prev.setOnPlaybackStatusUpdate(null);
+        } catch (_) {}
+        try {
+          await prev.stopAsync();
+        } catch (_) {}
+        try {
+          await prev.unloadAsync();
+        } catch (_) {}
       }
 
       if (playingUri === uri && isPlaying) {

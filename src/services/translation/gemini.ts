@@ -51,7 +51,14 @@ export async function translateWithGemini(
 
   let response = await callModel(targetModel);
 
-  // If initial model returns 404 or 503, fallback to gemini-3.5-flash
+  // If rate-limited (429) or temporary server glitch (503), retry after short backoff
+  if (!response.ok && (response.status === 429 || response.status === 503)) {
+    console.warn(`[Gemini] ${targetModel} returned status ${response.status}. Retrying in 2s...`);
+    await new Promise((r) => setTimeout(r, 2000));
+    response = await callModel(targetModel);
+  }
+
+  // If initial model returns 404 or still 503, fallback to gemini-3.5-flash
   if (!response.ok && (response.status === 404 || response.status === 503)) {
     console.warn(`[Gemini] ${targetModel} returned status ${response.status}. Falling back to gemini-3.5-flash...`);
     response = await callModel('gemini-3.5-flash');
@@ -65,8 +72,14 @@ export async function translateWithGemini(
   }
 
   const json = await response.json();
-  const textOutput =
-    json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const candidate = json.candidates?.[0];
+  if (!candidate || !candidate.content?.parts?.[0]?.text) {
+    if (candidate?.finishReason && candidate.finishReason !== 'STOP') {
+      throw new Error(`Gemini translation incomplete or blocked: ${candidate.finishReason}`);
+    }
+  }
+
+  const textOutput = candidate?.content?.parts?.[0]?.text || '';
 
   return parseTranslatedBatch(textOutput, segments);
 }

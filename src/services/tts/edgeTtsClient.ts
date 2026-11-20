@@ -251,16 +251,18 @@ export async function synthesizeSpeechWebSocket(
         }
       };
 
-      ws.onerror = (err) => {
+      ws.onerror = (err: any) => {
         if (isFinished) return;
         cleanup();
-        reject(new Error(`Edge-TTS WebSocket connection error: ${JSON.stringify(err)}`));
+        const detail = err?.message || (typeof err === 'string' ? err : 'Network connection failure');
+        reject(new Error(`Edge-TTS WebSocket connection error: ${detail}`));
       };
 
-      ws.onclose = () => {
-        if (!isFinished && audioChunks.length === 0) {
+      ws.onclose = (event: any) => {
+        if (!isFinished) {
           cleanup();
-          reject(new Error('Edge-TTS WebSocket closed before synthesis completed.'));
+          const reason = event?.reason ? ` (${event.reason})` : '';
+          reject(new Error(`Edge-TTS WebSocket closed before synthesis completed${reason}.`));
         }
       };
     } catch (err) {

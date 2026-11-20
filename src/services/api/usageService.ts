@@ -21,9 +21,9 @@ export class UsageService {
     if (!token) return null;
 
     try {
-      const response = await fetch(`${authService.getBackendUrl()}/api/usage/today`, {
+      const response = await authService.fetchWithTimeout(`${authService.getBackendUrl()}/api/usage/today`, {
         headers: { Authorization: `Bearer ${token}` },
-      });
+      }, 8000);
       if (response.ok) {
         return await response.json();
       }
@@ -43,7 +43,7 @@ export class UsageService {
       throw new Error('Please sign in to your 3SAJ account to use translation services.');
     }
 
-    const response = await fetch(`${authService.getBackendUrl()}/api/usage/reserve`, {
+    const response = await authService.fetchWithTimeout(`${authService.getBackendUrl()}/api/usage/reserve`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -54,7 +54,7 @@ export class UsageService {
         idempotency_token: idempotencyToken,
         project_id: projectId,
       }),
-    });
+    }, 15000);
 
     const data = await response.json();
     if (!response.ok) {
@@ -74,7 +74,7 @@ export class UsageService {
     if (!token) return false;
 
     try {
-      const response = await fetch(`${authService.getBackendUrl()}/api/usage/commit`, {
+      const response = await authService.fetchWithTimeout(`${authService.getBackendUrl()}/api/usage/commit`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -83,7 +83,7 @@ export class UsageService {
         body: JSON.stringify({
           idempotency_token: idempotencyToken,
         }),
-      });
+      }, 10000);
       return response.ok;
     } catch (e) {
       console.warn('Failed committing translation quota:', e);

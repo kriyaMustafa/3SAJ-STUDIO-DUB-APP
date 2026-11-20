@@ -48,9 +48,12 @@ export async function translateWithGoogleFree(
 
     while (attempts < 3 && !chunkSuccess) {
       attempts++;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
       try {
         const url = `https://translate.googleapis.com/translate_a/single?client=dict-chrome-ex&sl=auto&tl=km&dt=t&q=${encodeURIComponent(chunkText)}`;
         const res = await fetch(url, {
+          signal: controller.signal,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36',
           },
@@ -88,6 +91,8 @@ export async function translateWithGoogleFree(
       } catch (err) {
         console.warn(`[GoogleFree] Chunk translation attempt ${attempts} failed:`, err);
         await new Promise((r) => setTimeout(r, 500 * attempts));
+      } finally {
+        clearTimeout(timer);
       }
     }
 
@@ -123,9 +128,11 @@ async function translateSingleSegment(seg: SubtitleSegment): Promise<{
   gender: 'M' | 'F' | 'AUTO';
   ageTone: 'ADULT' | 'OLD' | 'KID';
 } | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
     const url = `https://translate.googleapis.com/translate_a/single?client=dict-chrome-ex&sl=auto&tl=km&dt=t&q=${encodeURIComponent(seg.originalText)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: controller.signal });
     if (res.ok) {
       const data = await res.json();
       const translated = Array.isArray(data[0]) ? data[0].map((item: any) => item[0]).join('') : '';
@@ -140,6 +147,8 @@ async function translateSingleSegment(seg: SubtitleSegment): Promise<{
     }
   } catch (err) {
     console.warn(`[GoogleFree] Single translate failed for ID ${seg.id}:`, err);
+  } finally {
+    clearTimeout(timer);
   }
   return null;
 }

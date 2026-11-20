@@ -107,6 +107,35 @@ export class AuthService {
   }
 
   /**
+   * Robust fetch wrapper with configurable AbortController timeout and informative error handling.
+   */
+  async fetchWithTimeout(
+    url: string,
+    options: RequestInit = {},
+    timeoutMs: number = 15000
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      return response;
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s. Please check your internet connection or server status.`);
+      }
+      if (err.message && (err.message.includes('Network request failed') || err.message.includes('Failed to fetch'))) {
+        throw new Error('Network connection failed. Please ensure your device has internet access and your backend server is running.');
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  /**
    * Retrieves or generates a persistent, unique device identifier.
    */
   async getDeviceId(): Promise<string> {
@@ -165,14 +194,14 @@ export class AuthService {
         return null;
       }
 
-      const res = await fetch(`${this.backendBaseUrl}/api/auth/refresh`, {
+      const res = await this.fetchWithTimeout(`${this.backendBaseUrl}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           refresh_token: refreshToken,
           device_id: deviceId,
         }),
-      });
+      }, 10000);
 
       if (!res.ok) {
         return null;
@@ -321,7 +350,7 @@ export class AuthService {
     const deviceId = await this.getDeviceId();
     const deviceName = await this.getDeviceName();
 
-    const response = await fetch(`${this.backendBaseUrl}/api/auth/register`, {
+    const response = await this.fetchWithTimeout(`${this.backendBaseUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -332,7 +361,7 @@ export class AuthService {
         device_name: deviceName,
         platform: Platform.OS,
       }),
-    });
+    }, 20000);
 
     const data = await response.json();
     if (!response.ok) {
@@ -355,7 +384,7 @@ export class AuthService {
     const deviceId = await this.getDeviceId();
     const deviceName = await this.getDeviceName();
 
-    const response = await fetch(`${this.backendBaseUrl}/api/auth/login`, {
+    const response = await this.fetchWithTimeout(`${this.backendBaseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -365,7 +394,7 @@ export class AuthService {
         device_name: deviceName,
         platform: Platform.OS,
       }),
-    });
+    }, 20000);
 
     const data = await response.json();
     if (!response.ok) {
@@ -394,7 +423,7 @@ export class AuthService {
     const deviceId = await this.getDeviceId();
     const deviceName = await this.getDeviceName();
 
-    const response = await fetch(`${this.backendBaseUrl}/api/auth/google`, {
+    const response = await this.fetchWithTimeout(`${this.backendBaseUrl}/api/auth/google`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -406,7 +435,7 @@ export class AuthService {
         device_name: deviceName,
         platform: Platform.OS,
       }),
-    });
+    }, 25000);
 
     const data = await response.json();
     if (!response.ok) {
@@ -441,7 +470,7 @@ export class AuthService {
     const deviceId = await this.getDeviceId();
     const deviceName = await this.getDeviceName();
 
-    const response = await fetch(`${this.backendBaseUrl}/api/auth/google`, {
+    const response = await this.fetchWithTimeout(`${this.backendBaseUrl}/api/auth/google`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -452,7 +481,7 @@ export class AuthService {
         device_name: deviceName,
         platform: Platform.OS,
       }),
-    });
+    }, 25000);
 
     const data = await response.json();
     if (!response.ok) {
@@ -575,12 +604,17 @@ export class AuthService {
     const token = await this.getAccessToken();
     if (!token) return [];
 
-    const response = await fetch(`${this.backendBaseUrl}/api/devices`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!response.ok) return [];
-    const data = await response.json();
-    return data.devices || [];
+    try {
+      const response = await this.fetchWithTimeout(`${this.backendBaseUrl}/api/devices`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }, 12000);
+      if (!response.ok) return [];
+      const data = await response.json();
+      return data.devices || [];
+    } catch (e) {
+      console.warn('Failed listing devices:', e);
+      return [];
+    }
   }
 
   /**
@@ -590,16 +624,21 @@ export class AuthService {
     const token = await this.getAccessToken();
     if (!token) return false;
 
-    const response = await fetch(`${this.backendBaseUrl}/api/devices/revoke`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ device_id: deviceId }),
-    });
+    try {
+      const response = await this.fetchWithTimeout(`${this.backendBaseUrl}/api/devices/revoke`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ device_id: deviceId }),
+      }, 12000);
 
-    return response.ok;
+      return response.ok;
+    } catch (e) {
+      console.warn('Failed revoking device:', e);
+      return false;
+    }
   }
 
   /**
@@ -611,14 +650,14 @@ export class AuthService {
 
     if (token) {
       try {
-        await fetch(`${this.backendBaseUrl}/api/auth/logout`, {
+        await this.fetchWithTimeout(`${this.backendBaseUrl}/api/auth/logout`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({ device_id: deviceId }),
-        });
+        }, 8000);
       } catch (e) {
         console.warn('Logout network error:', e);
       }
@@ -643,9 +682,9 @@ export class AuthService {
     }
 
     const query = planCode ? `?plan_code=${encodeURIComponent(planCode)}` : '';
-    const response = await fetch(`${this.backendBaseUrl}/api/subscriptions/verify/${paymentId}${query}`, {
+    const response = await this.fetchWithTimeout(`${this.backendBaseUrl}/api/subscriptions/verify/${paymentId}${query}`, {
       headers,
-    });
+    }, 15000);
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({ detail: 'Verification failed' }));

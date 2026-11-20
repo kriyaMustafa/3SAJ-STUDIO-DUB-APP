@@ -93,7 +93,7 @@ def activate_paid_subscription(conn, payment_id: str, user_id: str, plan_code: s
             (payment_id, payment_id)
         )
         payment_row = cur.fetchone()
-        real_payment_id = payment_row["id"] if payment_row else payment_id
+        payment_id_to_store = payment_row["id"] if payment_row else None
         real_plan_code = plan_code
 
         if payment_row:
@@ -123,15 +123,25 @@ def activate_paid_subscription(conn, payment_id: str, user_id: str, plan_code: s
         if not plan_meta:
             real_plan_code = plan_code or "FLASH"
 
-        # Check if already activated for this payment_id or real_payment_id
-        cur.execute(
-            """
-            SELECT id, plan_code, status, started_at, expires_at
-            FROM subscriptions
-            WHERE payment_id = %s OR payment_id = %s;
-            """,
-            (payment_id, real_payment_id)
-        )
+        # Check if already activated for this payment_id or payment_row["id"]
+        if payment_id_to_store:
+            cur.execute(
+                """
+                SELECT id, plan_code, status, started_at, expires_at
+                FROM subscriptions
+                WHERE payment_id = %s OR payment_id = %s;
+                """,
+                (payment_id, payment_id_to_store)
+            )
+        else:
+            cur.execute(
+                """
+                SELECT id, plan_code, status, started_at, expires_at
+                FROM subscriptions
+                WHERE payment_id = %s;
+                """,
+                (payment_id,)
+            )
         existing_sub = cur.fetchone()
         if existing_sub:
             # If the plan_code on the existing subscription doesn't match real_plan_code, update it
@@ -201,7 +211,7 @@ def activate_paid_subscription(conn, payment_id: str, user_id: str, plan_code: s
             VALUES (%s, %s, %s, %s, 'ACTIVE', %s, %s, FALSE, NOW(), NOW())
             RETURNING id, user_id, plan_code, payment_id, status, started_at, expires_at;
             """,
-            (new_sub_id, user_id, real_plan_code, real_payment_id, now, expires_at)
+            (new_sub_id, user_id, real_plan_code, payment_id_to_store, now, expires_at)
         )
         new_sub = cur.fetchone()
         conn.commit()

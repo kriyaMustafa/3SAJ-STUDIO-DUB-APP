@@ -203,12 +203,13 @@ export class CentralPaymentClient {
           headers.Authorization = `Bearer ${token}`;
         }
 
-        const response = await fetch(
+        const response = await authService.fetchWithTimeout(
           `${authService.getBackendUrl()}/api/subscriptions/verify/${paymentId}`,
           {
             method: 'GET',
             headers,
-          }
+          },
+          10000
         );
 
         if (response.ok) {

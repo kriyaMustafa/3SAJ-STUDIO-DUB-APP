@@ -44,7 +44,10 @@ def get_user_active_subscription(conn, user_id: str) -> Optional[Dict[str, Any]]
             return None
 
         now_utc = datetime.datetime.now(datetime.timezone.utc)
-        diff_ms = max(0.0, (sub["expires_at"] - now_utc).total_seconds())
+        exp_dt = sub["expires_at"]
+        if exp_dt and exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=datetime.timezone.utc)
+        diff_ms = max(0.0, (exp_dt - now_utc).total_seconds()) if exp_dt else 0.0
         days_remaining = min(30, max(0, int(round(diff_ms / 86400.0))))
         hours_remaining = max(0, int((diff_ms % 86400) // 3600))
 

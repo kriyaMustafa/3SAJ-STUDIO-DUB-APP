@@ -60,20 +60,34 @@ export class VideoSaveService {
         const rawName = fileName || cleanUri.split('/').pop() || 'dubbed_video';
         const outName = rawName.replace(/\.[^/.]+$/, '');
 
-        // Read and write file via StorageAccessFramework
-        const base64Data = await FileSystem.readAsStringAsync(cleanUri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-
         const newFileUri = await FileSystem.StorageAccessFramework.createFileAsync(
           permissions.directoryUri,
           outName,
           'video/mp4'
         );
 
-        await FileSystem.writeAsStringAsync(newFileUri, base64Data, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
+        // Stream copy directly without buffering full video binary into JS heap
+        // (prevents fatal OutOfMemoryError on large videos)
+        try {
+          await FileSystem.copyAsync({
+            from: cleanUri,
+            to: newFileUri,
+          });
+        } catch {
+          // If SAF direct stream copy is restricted by OEM Android ROM, fallback safely
+          const info = await FileSystem.getInfoAsync(cleanUri);
+          if (info.exists && info.size && info.size < 40 * 1024 * 1024) {
+            const base64Data = await FileSystem.readAsStringAsync(cleanUri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            await FileSystem.writeAsStringAsync(newFileUri, base64Data, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+          } else {
+            // For large videos, save directly to phone's public Movies/Gallery
+            return await this.saveToGallery(localVideoPath);
+          }
+        }
 
         Alert.alert('✅ Download Complete', 'Video successfully saved to your selected folder!');
         return true;
