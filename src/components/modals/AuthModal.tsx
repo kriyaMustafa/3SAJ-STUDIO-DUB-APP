@@ -3,10 +3,12 @@ import {
   Modal,
   View,
   Text,
+  TextInput,
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
   Alert,
+  ScrollView,
 } from 'react-native';
 import {
   X,
@@ -15,12 +17,21 @@ import {
   Smartphone,
   Trash2,
   AlertTriangle,
+  Copy,
+  ChevronDown,
+  ChevronUp,
+  LogIn,
+  Mail,
+  Lock,
 } from 'lucide-react-native';
 import Svg, { Path } from 'react-native-svg';
+import * as Clipboard from 'expo-clipboard';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import { authService, UserProfile, DeviceInfo } from '../../services/api/authService';
 
 const GOOGLE_WEB_CLIENT_ID = '76120676265-nh7sstgffij29s3qukarj5eil28rbfj0.apps.googleusercontent.com';
+const ANDROID_PACKAGE_NAME = 'com.saj.studio.dubbing';
+const ANDROID_DEBUG_SHA1 = '5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25';
 
 // Configure Google Sign-In once
 GoogleSignin.configure({
@@ -64,6 +75,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 }) => {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [devErrorDetails, setDevErrorDetails] = useState(false);
+
+  // Email / Password fallback state
+  const [showEmailLogin, setShowEmailLogin] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [emailLoading, setEmailLoading] = useState(false);
 
   // Device limit handling (max 2 active phones)
   const [deviceLimitExceeded, setDeviceLimitExceeded] = useState(false);
@@ -72,14 +90,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   useEffect(() => {
     if (visible) {
       setErrorMsg(null);
+      setDevErrorDetails(false);
       setDeviceLimitExceeded(false);
     }
   }, [visible]);
+
+  const handleCopySha1 = async () => {
+    try {
+      await Clipboard.setStringAsync(ANDROID_DEBUG_SHA1);
+      Alert.alert('SHA-1 Copied!', `SHA-1 key copied to clipboard:\n${ANDROID_DEBUG_SHA1}`);
+    } catch {
+      Alert.alert('SHA-1 Key', ANDROID_DEBUG_SHA1);
+    }
+  };
+
+  const handleCopyPackageName = async () => {
+    try {
+      await Clipboard.setStringAsync(ANDROID_PACKAGE_NAME);
+      Alert.alert('Package Name Copied!', ANDROID_PACKAGE_NAME);
+    } catch {
+      Alert.alert('Package Name', ANDROID_PACKAGE_NAME);
+    }
+  };
 
   const handleGoogleSignIn = async () => {
     try {
       setLoading(true);
       setErrorMsg(null);
+      setDevErrorDetails(false);
       setDeviceLimitExceeded(false);
 
       // Verify Google Play Services are available on the Android device
@@ -129,9 +167,39 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
+      const isDevError =
+        err.code === '10' ||
+        err.code === 10 ||
+        (err.message && err.message.includes('DEVELOPER_ERROR'));
+
+      if (isDevError) {
+        setDevErrorDetails(true);
+        setErrorMsg('DEVELOPER_ERROR: Android OAuth Client ID is missing in Google Cloud Console. Add the SHA-1 below to fix it.');
+        return;
+      }
+
       setErrorMsg(err.message || 'Google authentication failed. Please check your network connection.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleEmailSignIn = async () => {
+    if (!email.trim() || !password.trim()) {
+      setErrorMsg('Please enter both email and password.');
+      return;
+    }
+
+    try {
+      setEmailLoading(true);
+      setErrorMsg(null);
+      const res = await authService.login(email.trim(), password.trim());
+      onAuthSuccess(res.user);
+      onClose();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Email login failed. Please check your credentials.');
+    } finally {
+      setEmailLoading(false);
     }
   };
 
@@ -158,91 +226,184 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.overlay}>
         <View style={styles.container}>
-          {/* Header */}
-          <View style={styles.header}>
-            <View>
-              <Text style={styles.title}>Sign In to 3SAJ Studio</Text>
-              <Text style={styles.subtitle}>Direct connection with real Google Account</Text>
-            </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <X size={20} color="#94A3B8" />
-            </TouchableOpacity>
-          </View>
-
-          {/* Value Highlights */}
-          <View style={styles.perksContainer}>
-            <View style={styles.perkRow}>
-              <View style={styles.perkIconBox}>
-                <Zap size={14} color="#38BDF8" />
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* Header */}
+            <View style={styles.header}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.title}>Sign In to 3SAJ Studio</Text>
+                <Text style={styles.subtitle}>Direct connection with real Google Account</Text>
               </View>
-              <Text style={styles.perkText}>Zero registration forms or passwords to remember</Text>
+              <TouchableOpacity onPress={onClose} style={styles.closeBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <X size={20} color="#94A3B8" />
+              </TouchableOpacity>
             </View>
-            <View style={styles.perkRow}>
-              <View style={styles.perkIconBox}>
-                <ShieldCheck size={14} color="#10B981" />
-              </View>
-              <Text style={styles.perkText}>Cryptographically verified by official Google OAuth</Text>
-            </View>
-            <View style={styles.perkRow}>
-              <View style={styles.perkIconBox}>
-                <Smartphone size={14} color="#A855F7" />
-              </View>
-              <Text style={styles.perkText}>Syncs subscription and translation quota on up to 2 phones</Text>
-            </View>
-          </View>
 
-          {/* Error Message */}
-          {errorMsg && (
-            <View style={styles.errorContainer}>
-              <AlertTriangle size={16} color="#F87171" style={{ marginRight: 6 }} />
-              <Text style={styles.errorText}>{errorMsg}</Text>
+            {/* Value Highlights */}
+            <View style={styles.perksContainer}>
+              <View style={styles.perkRow}>
+                <View style={styles.perkIconBox}>
+                  <Zap size={14} color="#38BDF8" />
+                </View>
+                <Text style={styles.perkText}>Zero registration forms or passwords to remember</Text>
+              </View>
+              <View style={styles.perkRow}>
+                <View style={styles.perkIconBox}>
+                  <ShieldCheck size={14} color="#10B981" />
+                </View>
+                <Text style={styles.perkText}>Cryptographically verified by official Google OAuth</Text>
+              </View>
+              <View style={styles.perkRow}>
+                <View style={styles.perkIconBox}>
+                  <Smartphone size={14} color="#A855F7" />
+                </View>
+                <Text style={styles.perkText}>Syncs subscription and translation quota on up to 2 phones</Text>
+              </View>
             </View>
-          )}
 
-          {/* Device Limit Exceeded: List Active Devices */}
-          {deviceLimitExceeded && activeDevices.length > 0 && (
-            <View style={styles.devicesList}>
-              {activeDevices.map((d) => (
-                <View key={d.device_id} style={styles.deviceItem}>
-                  <Smartphone size={16} color="#38BDF8" style={{ marginRight: 8 }} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.deviceName}>{d.device_name || 'Active Phone'}</Text>
-                    <Text style={styles.devicePlatform}>{d.platform?.toUpperCase()}</Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.disconnectBtn}
-                    onPress={() => handleRevokeDevice(d.device_id)}
-                  >
-                    <Trash2 size={13} color="#EF4444" style={{ marginRight: 4 }} />
-                    <Text style={styles.disconnectBtnText}>Disconnect</Text>
+            {/* Error Message */}
+            {errorMsg && (
+              <View style={styles.errorContainer}>
+                <AlertTriangle size={16} color="#F87171" style={{ marginRight: 6, marginTop: 2 }} />
+                <Text style={styles.errorText}>{errorMsg}</Text>
+              </View>
+            )}
+
+            {/* Google Developer Error Diagnostic Panel */}
+            {devErrorDetails && (
+              <View style={styles.diagnosticCard}>
+                <Text style={styles.diagTitle}>Required in Google Cloud Console:</Text>
+                <Text style={styles.diagDesc}>
+                  Go to console.cloud.google.com &gt; Credentials &gt; Create "OAuth client ID" &gt; Android:
+                </Text>
+
+                <View style={styles.diagRow}>
+                  <Text style={styles.diagLabel}>Package Name:</Text>
+                  <Text style={styles.diagValue}>{ANDROID_PACKAGE_NAME}</Text>
+                  <TouchableOpacity onPress={handleCopyPackageName} style={styles.copyBtn}>
+                    <Copy size={13} color="#38BDF8" />
+                    <Text style={styles.copyBtnText}>Copy</Text>
                   </TouchableOpacity>
                 </View>
-              ))}
-            </View>
-          )}
 
-          {/* Continue with Google Button */}
-          <TouchableOpacity
-            style={[styles.googleBtn, loading && styles.googleBtnDisabled]}
-            onPress={handleGoogleSignIn}
-            disabled={loading}
-            activeOpacity={0.85}
-          >
-            {loading ? (
-              <ActivityIndicator color="#0F172A" />
-            ) : (
-              <>
-                <View style={styles.googleIconContainer}>
-                  <GoogleLogo size={20} />
+                <View style={styles.diagRow}>
+                  <Text style={styles.diagLabel}>SHA-1 Fingerprint:</Text>
+                  <Text style={styles.diagValue} numberOfLines={2}>
+                    {ANDROID_DEBUG_SHA1}
+                  </Text>
+                  <TouchableOpacity onPress={handleCopySha1} style={styles.copyBtn}>
+                    <Copy size={13} color="#38BDF8" />
+                    <Text style={styles.copyBtnText}>Copy</Text>
+                  </TouchableOpacity>
                 </View>
-                <Text style={styles.googleBtnText}>Continue with Google</Text>
-              </>
+              </View>
             )}
-          </TouchableOpacity>
 
-          <Text style={styles.footerNote}>
-            By signing in, your subscription and daily quotas are safely linked to your Gmail.
-          </Text>
+            {/* Device Limit Exceeded: List Active Devices */}
+            {deviceLimitExceeded && activeDevices.length > 0 && (
+              <View style={styles.devicesList}>
+                {activeDevices.map((d) => (
+                  <View key={d.device_id} style={styles.deviceItem}>
+                    <Smartphone size={16} color="#38BDF8" style={{ marginRight: 8 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.deviceName}>{d.device_name || 'Active Phone'}</Text>
+                      <Text style={styles.devicePlatform}>{d.platform?.toUpperCase()}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.disconnectBtn}
+                      onPress={() => handleRevokeDevice(d.device_id)}
+                    >
+                      <Trash2 size={13} color="#EF4444" style={{ marginRight: 4 }} />
+                      <Text style={styles.disconnectBtnText}>Disconnect</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Continue with Google Button */}
+            <TouchableOpacity
+              style={[styles.googleBtn, loading && styles.googleBtnDisabled]}
+              onPress={handleGoogleSignIn}
+              disabled={loading}
+              activeOpacity={0.85}
+            >
+              {loading ? (
+                <ActivityIndicator color="#0F172A" />
+              ) : (
+                <>
+                  <View style={styles.googleIconContainer}>
+                    <GoogleLogo size={20} />
+                  </View>
+                  <Text style={styles.googleBtnText}>Continue with Google</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            {/* Email Fallback Toggle */}
+            <TouchableOpacity
+              style={styles.toggleEmailBtn}
+              onPress={() => setShowEmailLogin(!showEmailLogin)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.toggleEmailText}>
+                {showEmailLogin ? 'Hide Email Sign In' : 'Or Sign In with Email & Password'}
+              </Text>
+              {showEmailLogin ? <ChevronUp size={14} color="#94A3B8" /> : <ChevronDown size={14} color="#94A3B8" />}
+            </TouchableOpacity>
+
+            {/* Email / Password Form (Fallback) */}
+            {showEmailLogin && (
+              <View style={styles.emailForm}>
+                <View style={styles.inputContainer}>
+                  <Mail size={16} color="#94A3B8" style={{ marginRight: 10 }} />
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Email address"
+                    placeholderTextColor="#64748B"
+                    value={email}
+                    onChangeText={setEmail}
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                  />
+                </View>
+
+                <View style={styles.inputContainer}>
+                  <Lock size={16} color="#94A3B8" style={{ marginRight: 10 }} />
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Password"
+                    placeholderTextColor="#64748B"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry
+                  />
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.emailSubmitBtn, emailLoading && { opacity: 0.7 }]}
+                  onPress={handleEmailSignIn}
+                  disabled={emailLoading}
+                >
+                  {emailLoading ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <>
+                      <LogIn size={16} color="#FFFFFF" style={{ marginRight: 8 }} />
+                      <Text style={styles.emailSubmitText}>Sign In with Email</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <Text style={styles.footerNote}>
+              By signing in, your subscription and daily quotas are safely linked to your account.
+            </Text>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -411,6 +572,116 @@ const styles = StyleSheet.create({
   disconnectBtnText: {
     color: '#EF4444',
     fontSize: 11,
+    fontWeight: '700',
+  },
+  scrollContent: {
+    paddingBottom: 4,
+  },
+  diagnosticCard: {
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+    padding: 12,
+    marginBottom: 14,
+    gap: 8,
+  },
+  diagTitle: {
+    color: '#FBBF24',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  diagDesc: {
+    color: '#94A3B8',
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  diagRow: {
+    backgroundColor: '#0F172A',
+    borderRadius: 8,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    gap: 4,
+  },
+  diagLabel: {
+    color: '#64748B',
+    fontSize: 10,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  diagValue: {
+    color: '#F8FAFC',
+    fontSize: 11,
+    fontFamily: 'monospace',
+  },
+  copyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    borderRadius: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    gap: 4,
+    marginTop: 2,
+  },
+  copyBtnText: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  toggleEmailBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    marginTop: 8,
+    gap: 6,
+  },
+  toggleEmailText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  emailForm: {
+    backgroundColor: '#1E293B',
+    borderRadius: 14,
+    padding: 12,
+    gap: 10,
+    marginTop: 4,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 12,
+    paddingVertical: 2,
+  },
+  textInput: {
+    flex: 1,
+    color: '#F8FAFC',
+    fontSize: 13,
+    paddingVertical: 8,
+  },
+  emailSubmitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0284C7',
+    borderRadius: 10,
+    paddingVertical: 10,
+    marginTop: 2,
+  },
+  emailSubmitText: {
+    color: '#FFFFFF',
+    fontSize: 13,
     fontWeight: '700',
   },
 });
