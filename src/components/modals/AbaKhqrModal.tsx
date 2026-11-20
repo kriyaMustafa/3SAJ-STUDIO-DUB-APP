@@ -50,7 +50,7 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
   const [loadingMessage, setLoadingMessage] = useState('Generating ABA KHQR Code...');
   const [session, setSession] = useState<PaymentSessionResponse | null>(null);
   const [paymentStatus, setPaymentStatus] = useState<'PENDING' | 'PAID' | 'FAILED' | 'EXPIRED'>('PENDING');
-  const [secondsRemaining, setSecondsRemaining] = useState(900); // 15 minutes
+  const [secondsRemaining, setSecondsRemaining] = useState(300); // 5 minutes default (matches Central Payment settings)
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const pollCancelledRef = useRef(false);
 
@@ -103,18 +103,34 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
         planTitle: planName,
       });
 
+      // Synchronize exact expiration with Central Payment's expires_at (defaults to 5 minutes / 300s)
+      let expireSeconds = 300;
+      if (paymentData.expires_at) {
+        try {
+          const expireTime = new Date(paymentData.expires_at).getTime();
+          const now = Date.now();
+          const diff = Math.round((expireTime - now) / 1000);
+          if (diff > 10 && diff < 86400) {
+            expireSeconds = diff;
+          }
+        } catch (e) {
+          console.warn('Failed parsing paymentData.expires_at:', e);
+        }
+      }
+
+      setSecondsRemaining(expireSeconds);
       setSession(paymentData);
       setLoading(false);
 
-      // 2. Start polling for status
-      startPolling(paymentData.payment_id);
+      // 2. Start polling for status matching the authoritative Central Payment expiration
+      startPolling(paymentData.payment_id, expireSeconds);
     } catch (err: any) {
       setLoading(false);
       setErrorMessage(err.message || 'Failed to generate ABA KHQR invoice.');
     }
   };
 
-  const startPolling = async (paymentId: string) => {
+  const startPolling = async (paymentId: string, maxSeconds: number = 300) => {
     try {
       await centralPaymentClient.pollPaymentStatus(
         paymentId,
@@ -147,7 +163,7 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
             pollCancelledRef.current = true;
           }
         },
-        900,
+        maxSeconds,
         2500
       );
     } catch (e) {
@@ -221,6 +237,18 @@ export const AbaKhqrModal: React.FC<AbaKhqrModalProps> = ({
               <Text style={{ color: '#38BDF8', fontSize: 13, marginTop: 12, fontWeight: '600' }}>
                 Returning to app...
               </Text>
+            </View>
+          ) : paymentStatus === 'EXPIRED' ? (
+            <View style={styles.centerContainer}>
+              <Clock size={64} color="#EF4444" />
+              <Text style={styles.paidTitle}>Invoice Expired</Text>
+              <Text style={styles.paidSubtext}>
+                This payment session has expired. Tap below to generate a new ABA KHQR code.
+              </Text>
+              <TouchableOpacity style={styles.retryBtn} onPress={initPayment}>
+                <RefreshCw size={16} color="#FFF" style={{ marginRight: 6 }} />
+                <Text style={styles.retryBtnText}>Generate New QR</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <ScrollView
