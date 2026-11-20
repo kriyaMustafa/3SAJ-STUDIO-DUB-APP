@@ -13,9 +13,8 @@ if env_file.exists():
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL environment variable is required. Please set it in your Render environment.")
+DEFAULT_DATABASE_URL = "postgresql://neondb_owner:npg_HgUyNbTe61iL@ep-raspy-unit-aoqcnerj-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+DATABASE_URL = os.environ.get("DATABASE_URL") or DEFAULT_DATABASE_URL
 
 def get_db_connection():
     """Returns a psycopg connection with dictionary row factory."""

@@ -7,14 +7,13 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger("central_payment_client")
 
-CENTRAL_PAYMENT_URL = os.environ.get(
-    "CENTRAL_PAYMENT_API_URL",
-    "https://threesaj-central-payment-staging.onrender.com/api/v1"
+CENTRAL_PAYMENT_URL = (
+    os.environ.get("CENTRAL_PAYMENT_API_URL")
+    or os.environ.get("CENTRAL_PAYMENT_URL")
+    or "https://threesaj-central-payment-staging.onrender.com/api/v1"
 ).rstrip("/")
 
-STUDIO_APP_API_KEY = os.environ.get("STUDIO_APP_API_KEY")
-if not STUDIO_APP_API_KEY:
-    raise RuntimeError("STUDIO_APP_API_KEY environment variable is required. Please set it in your Render environment.")
+STUDIO_APP_API_KEY = os.environ.get("STUDIO_APP_API_KEY") or "saj_live_studioapp_f7a9c8b2e1d4039586172a3b4c5d6e7f8a9b0c1d2e3f4a5b"
 
 def create_central_payment(
     amount: float,

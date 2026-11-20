@@ -1,8 +1,17 @@
 services:
   - type: web
-    name: 3saj-studio-extractor
+    name: threesaj-studio-dub-app
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     plan: free
     autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        value: postgresql://neondb_owner:npg_HgUyNbTe61iL@ep-raspy-unit-aoqcnerj-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+      - key: JWT_SECRET
+        value: 3saj_studio_jwt_secret_secure_key_2026
+      - key: STUDIO_APP_API_KEY
+        value: saj_live_studioapp_f7a9c8b2e1d4039586172a3b4c5d6e7f8a9b0c1d2e3f4a5b
+      - key: CENTRAL_PAYMENT_API_URL
+        value: https://threesaj-central-payment-staging.onrender.com/api/v1

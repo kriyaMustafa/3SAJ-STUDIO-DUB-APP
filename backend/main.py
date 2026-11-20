@@ -13,8 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 import requests
 import yt_dlp
-from google.oauth2 import id_token as google_id_token
-from google.auth.transport import requests as google_requests
+try:
+    from google.oauth2 import id_token as google_id_token
+    from google.auth.transport import requests as google_requests
+    HAS_GOOGLE_AUTH = True
+except Exception:
+    HAS_GOOGLE_AUTH = False
+    google_id_token = None
+    google_requests = None
 
 from database import get_db_connection
 from auth import (
@@ -105,6 +111,14 @@ class WebGoogleCompleteRequest(BaseModel):
     device_id: str
     device_name: Optional[str] = "Android Device"
     id_token: str
+    revoke_device_id: Optional[str] = None
+
+class WebEmailLoginRequest(BaseModel):
+    session_id: str
+    device_id: str
+    device_name: Optional[str] = "Android Device"
+    email: str
+    password: str
     revoke_device_id: Optional[str] = None
 
 class RefreshTokenRequest(BaseModel):
@@ -254,21 +268,26 @@ def google_auth(req: GoogleAuthRequest):
 
     # 1. Cryptographically verify id_token if provided
     if req.id_token:
-        try:
-            id_info = google_id_token.verify_oauth2_token(
-                req.id_token,
-                google_requests.Request(),
-                GOOGLE_WEB_CLIENT_ID
-            )
-            email = id_info.get("email", "").lower().strip()
-            google_id = id_info.get("sub")
-            full_name = id_info.get("name") or full_name
-        except Exception as e:
-            logger.warning(f"google-auth verify failed ({e}), attempting tokeninfo endpoint fallback...")
+        verified = False
+        if HAS_GOOGLE_AUTH and google_id_token is not None:
+            try:
+                id_info = google_id_token.verify_oauth2_token(
+                    req.id_token,
+                    google_requests.Request(),
+                    GOOGLE_WEB_CLIENT_ID
+                )
+                email = id_info.get("email", "").lower().strip()
+                google_id = id_info.get("sub")
+                full_name = id_info.get("name") or full_name
+                verified = True
+            except Exception as e:
+                logger.warning(f"google-auth verify failed ({e}), attempting tokeninfo endpoint fallback...")
+
+        if not verified:
             try:
                 resp = requests.get(
                     f"https://oauth2.googleapis.com/tokeninfo?id_token={req.id_token}",
-                    timeout=5
+                    timeout=8
                 )
                 if resp.status_code == 200:
                     id_info = resp.json()
@@ -439,96 +458,168 @@ def google_web_login_page(session_id: str, device_id: str, device_name: Optional
       justify-content: center;
       align-items: center;
       min-height: 100vh;
-      padding: 20px;
+      padding: 16px;
     }}
     .card {{
       background: #1E293B;
       border: 1px solid #334155;
       border-radius: 20px;
-      padding: 32px 24px;
-      max-width: 420px;
+      padding: 28px 22px;
+      max-width: 400px;
       width: 100%;
       text-align: center;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
     }}
     .badge {{
       display: inline-block;
       background: rgba(56, 189, 248, 0.15);
       color: #38BDF8;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 700;
       letter-spacing: 0.5px;
       text-transform: uppercase;
       padding: 4px 12px;
       border-radius: 9999px;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
     }}
     h1 {{
-      font-size: 24px;
+      font-size: 22px;
       font-weight: 800;
       color: #FFFFFF;
-      margin-bottom: 8px;
-      letter-spacing: -0.5px;
+      margin-bottom: 6px;
     }}
     p {{
       color: #94A3B8;
-      font-size: 14px;
+      font-size: 13px;
       line-height: 1.5;
-      margin-bottom: 28px;
+      margin-bottom: 22px;
     }}
     .google-btn-wrapper {{
       display: flex;
       justify-content: center;
       align-items: center;
-      margin-bottom: 20px;
+      margin-bottom: 16px;
       min-height: 48px;
     }}
-    #status-msg {{
-      margin-top: 16px;
+    .divider {{
+      display: flex;
+      align-items: center;
+      margin: 18px 0;
+      color: #64748B;
+      font-size: 11px;
+      font-weight: 700;
+    }}
+    .divider::before, .divider::after {{
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: #334155;
+    }}
+    .divider span {{
+      padding: 0 10px;
+    }}
+    .input-field {{
+      width: 100%;
+      background: #0F172A;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 12px 14px;
+      color: #FFFFFF;
       font-size: 14px;
+      margin-bottom: 10px;
+      outline: none;
+    }}
+    .input-field:focus {{
+      border-color: #38BDF8;
+    }}
+    .btn-email-submit {{
+      width: 100%;
+      background: #0284C7;
+      color: #FFFFFF;
+      border: none;
+      border-radius: 10px;
+      padding: 12px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }}
+    .btn-email-submit:hover {{
+      background: #0369A1;
+    }}
+    #status-msg {{
+      margin-top: 14px;
+      font-size: 13px;
       color: #38BDF8;
-      min-height: 24px;
+      min-height: 20px;
     }}
     .btn-return {{
       display: none;
-      margin-top: 16px;
-      background: #0284C7;
+      margin-top: 14px;
+      background: #10B981;
       color: #FFFFFF;
       text-decoration: none;
       font-weight: 700;
-      padding: 14px 20px;
-      border-radius: 12px;
-      font-size: 15px;
+      padding: 12px 18px;
+      border-radius: 10px;
+      font-size: 14px;
+      width: 100%;
     }}
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="badge">Web Authentication</div>
+    <div class="badge">Account Sign-In</div>
     <h1>3SAJ STUDIO</h1>
-    <p>Sign in with your Google Account to activate your subscription and translation quota on this device.</p>
+    <p>Sign in to sync your subscription and translation quota on this device.</p>
 
+    <!-- Google Sign-In Container -->
     <div class="google-btn-wrapper">
-      <div id="g_id_onload"
-           data-client_id="{GOOGLE_WEB_CLIENT_ID}"
-           data-callback="handleCredentialResponse"
-           data-auto_prompt="false">
-      </div>
-      <div class="g_id_signin"
-           data-type="standard"
-           data-shape="pill"
-           data-theme="filled_blue"
-           data-text="continue_with"
-           data-size="large"
-           data-logo_alignment="left">
-      </div>
+      <div id="google-signin-btn"></div>
     </div>
+    <div id="g_id_onload"
+         data-client_id="{GOOGLE_WEB_CLIENT_ID}"
+         data-callback="handleCredentialResponse"
+         data-auto_prompt="false">
+    </div>
+
+    <!-- Email Fallback Form -->
+    <div class="divider"><span>OR SIGN IN WITH EMAIL</span></div>
+    <form id="email-form" onsubmit="handleEmailSubmit(event)">
+      <input type="email" id="email-input" class="input-field" placeholder="Email Address" required />
+      <input type="password" id="pass-input" class="input-field" placeholder="Password" required />
+      <button type="submit" id="btn-submit-email" class="btn-email-submit">Sign In to 3SAJ Studio</button>
+    </form>
 
     <div id="status-msg"></div>
     <a id="btn-return" class="btn-return" href="#">Open 3SAJ Studio App</a>
   </div>
 
   <script>
+    window.onload = function() {{
+      try {{
+        if (window.google && google.accounts && google.accounts.id) {{
+          google.accounts.id.initialize({{
+            client_id: "{GOOGLE_WEB_CLIENT_ID}",
+            callback: handleCredentialResponse,
+            auto_select: false
+          }});
+          google.accounts.id.renderButton(
+            document.getElementById("google-signin-btn"),
+            {{
+              theme: "filled_blue",
+              size: "large",
+              text: "continue_with",
+              shape: "pill",
+              width: 280,
+              logo_alignment: "left"
+            }}
+          );
+        }}
+      }} catch (e) {{
+        console.warn("GIS init error:", e);
+      }}
+    }};
+
     async function handleCredentialResponse(response) {{
       const statusBox = document.getElementById('status-msg');
       const returnBtn = document.getElementById('btn-return');
@@ -550,13 +641,53 @@ def google_web_login_page(session_id: str, device_id: str, device_name: Optional
         if (res.ok && data.success) {{
           statusBox.innerHTML = '<span style="color:#10B981;font-weight:bold;">Sign-in successful!</span><br><span style="font-size:12px;color:#94A3B8;">Returning to 3SAJ Studio...</span>';
           returnBtn.href = data.redirect_url;
-          returnBtn.style.display = 'inline-block';
+          returnBtn.style.display = 'block';
           window.location.href = data.redirect_url;
         }} else {{
           statusBox.innerHTML = '<span style="color:#EF4444;">' + (data.detail || 'Sign-in failed. Please try again.') + '</span>';
         }}
       }} catch (err) {{
         statusBox.innerHTML = '<span style="color:#EF4444;">Connection error. Please try again.</span>';
+      }}
+    }}
+
+    async function handleEmailSubmit(e) {{
+      e.preventDefault();
+      const statusBox = document.getElementById('status-msg');
+      const returnBtn = document.getElementById('btn-return');
+      const submitBtn = document.getElementById('btn-submit-email');
+      const email = document.getElementById('email-input').value.trim();
+      const password = document.getElementById('pass-input').value;
+
+      statusBox.innerText = 'Signing in...';
+      submitBtn.disabled = true;
+
+      try {{
+        const res = await fetch('/api/auth/google/web/email-login', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{
+            session_id: '{session_id}',
+            device_id: '{device_id}',
+            device_name: '{device_name}',
+            email: email,
+            password: password
+          }})
+        }});
+
+        const data = await res.json();
+        if (res.ok && data.success) {{
+          statusBox.innerHTML = '<span style="color:#10B981;font-weight:bold;">Sign-in successful!</span><br><span style="font-size:12px;color:#94A3B8;">Returning to 3SAJ Studio...</span>';
+          returnBtn.href = data.redirect_url;
+          returnBtn.style.display = 'block';
+          window.location.href = data.redirect_url;
+        }} else {{
+          statusBox.innerHTML = '<span style="color:#EF4444;">' + (data.detail || 'Sign-in failed. Please check credentials.') + '</span>';
+        }}
+      }} catch (err) {{
+        statusBox.innerHTML = '<span style="color:#EF4444;">Connection error. Please try again.</span>';
+      }} finally {{
+        submitBtn.disabled = false;
       }}
     }}
   </script>
@@ -575,6 +706,46 @@ def complete_web_google_auth(req: WebGoogleCompleteRequest):
         revoke_device_id=req.revoke_device_id
     )
     auth_result = google_auth(auth_req)
+
+    user = auth_result["user"]
+    tokens = auth_result["tokens"]
+
+    ensure_web_auth_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE web_auth_sessions
+                SET status = 'authenticated',
+                    user_data = %s,
+                    tokens = %s
+                WHERE session_id = %s;
+                """,
+                (json.dumps(user), json.dumps(tokens), req.session_id)
+            )
+            conn.commit()
+
+    redirect_url = f"sajstudio://auth/callback?session_id={req.session_id}&access_token={tokens['access_token']}&refresh_token={tokens['refresh_token']}&user_id={user['id']}&email={quote_plus(user['email'])}&full_name={quote_plus(user['full_name'] or '')}"
+
+    return {
+        "success": True,
+        "redirect_url": redirect_url,
+        "user": user,
+        "tokens": tokens
+    }
+
+@app.post("/api/auth/google/web/email-login")
+def complete_web_email_login(req: WebEmailLoginRequest):
+    """Allows email/password login from the browser to authenticate the mobile session."""
+    login_req = LoginRequest(
+        email=req.email,
+        password=req.password,
+        device_id=req.device_id,
+        device_name=req.device_name,
+        platform="android",
+        revoke_device_id=req.revoke_device_id
+    )
+    auth_result = login_user(login_req)
 
     user = auth_result["user"]
     tokens = auth_result["tokens"]
