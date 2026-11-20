@@ -136,11 +136,11 @@ class ExtractResponse(BaseModel):
     durationSeconds: Optional[int] = None
 
 # ==============================================================================
-# HEALTH & CONFIG
+# HEALTH & CONFIG (Supports GET, HEAD, POST, OPTIONS for Uptime Monitors)
 # ==============================================================================
 
-@app.get("/")
-@app.get("/health")
+@app.api_route("/", methods=["GET", "HEAD", "POST", "OPTIONS"])
+@app.api_route("/health", methods=["GET", "HEAD", "POST", "OPTIONS"])
 def health_check():
     return {
         "status": "online",
