@@ -10,37 +10,42 @@ export interface TimeStretchResult {
 }
 
 /**
- * Builds atempo filter for FFmpeg.
- * Clamps speedup to maxSpeed (default 2.0x max as per user specification "x2 (max x)")
- * to preserve natural Khmer speech clarity and avoid unintelligible chipmunk artifacts.
+ * Builds chained atempo filters for FFmpeg.
+ * FFmpeg atempo only supports 0.5 to 2.0 per filter instance.
+ * For speedups > 2.0x, multiple atempo filters must be chained (e.g. atempo=2.0,atempo=1.5 for 3.0x).
+ * Supports ratios up to 4.0x so long TTS speech cleanly fits into short subtitle segments.
  */
-export function buildAtempoFilter(targetRatio: number, maxSpeed: number = 2.0): string {
+export function buildAtempoFilter(targetRatio: number, maxSpeed: number = 4.0): string {
   let ratio = targetRatio;
-  if (!isFinite(ratio) || ratio <= 1.0) return 'atempo=1.0';
-  // Strictly clamp to maxSpeed (2.0x max)
+  if (!isFinite(ratio) || ratio <= 1.01) return 'atempo=1.0';
   if (ratio > maxSpeed) ratio = maxSpeed;
 
-  if (Math.abs(ratio - 1.0) < 0.02) {
-    return 'atempo=1.0';
+  const filters: string[] = [];
+  while (ratio > 2.0) {
+    filters.push('atempo=2.0');
+    ratio /= 2.0;
   }
-  return `atempo=${ratio.toFixed(4)}`;
+  if (ratio > 1.01) {
+    filters.push(`atempo=${ratio.toFixed(4)}`);
+  }
+  return filters.length > 0 ? filters.join(',') : 'atempo=1.0';
 }
 
 /**
  * Fit-to-Slot Time Stretch.
  * Speeds up TTS audio if its duration is longer than the subtitle's time slot (endTime - startTime).
- * Strictly caps speedup to 2.0x max so voice lines sound natural and are never cut off.
+ * Uses chained atempo to accelerate voice to fit the exact segment duration cleanly.
  */
 export async function fitAudioToSlot(
   audioPath: string,
   slotDurationMs: number,
-  maxAtempo: number = 2.0
+  maxAtempo: number = 4.0
 ): Promise<TimeStretchResult> {
   const cleanPath = audioPath.replace(/^file:\/\//, '');
   const actualDurationMs = await getMediaDurationMs(cleanPath);
 
-  // If slot duration is invalid or audio already fits within slot, no stretching needed
-  if (slotDurationMs <= 0 || actualDurationMs <= slotDurationMs + 30) {
+  // If slot duration is invalid or audio already fits within slot (with small 20ms tolerance), no stretching needed
+  if (slotDurationMs <= 0 || actualDurationMs <= slotDurationMs + 20) {
     return {
       stretched: false,
       ratio: 1.0,
@@ -50,7 +55,7 @@ export async function fitAudioToSlot(
     };
   }
 
-  // Calculate speedup ratio needed to fit cleanly into slotDurationMs, capped at maxAtempo (2.0x)
+  // Calculate speedup ratio needed to fit cleanly into slotDurationMs, up to maxAtempo (default 4.0x)
   const targetRatio = Math.min(maxAtempo, Math.max(1.02, actualDurationMs / slotDurationMs));
   const atempoFilter = buildAtempoFilter(targetRatio, maxAtempo);
   const isMp3 = cleanPath.toLowerCase().endsWith('.mp3');
@@ -58,11 +63,9 @@ export async function fitAudioToSlot(
     ? cleanPath.replace(/\.mp3$/i, '_stretched.mp3')
     : cleanPath.replace(/\.wav$/i, '_stretched.wav');
 
-  // FFmpeg atempo command: accelerates speech naturally up to 2.0x max
-  // CRITICAL: We NEVER use '-t' to cut or truncate speech!
-  // The atempo filter accelerates the entire voice line so zero words are dropped or cut off.
+  const targetSec = (slotDurationMs / 1000).toFixed(4);
   const codec = isMp3 ? '-c:a libmp3lame -b:a 128k' : '-c:a pcm_s16le';
-  const command = `-y -i "${cleanPath}" -filter:a "${atempoFilter}" -ar 44100 -ac 1 ${codec} "${tempOutputPath}"`;
+  const command = `-y -i "${cleanPath}" -filter:a "${atempoFilter}" -t ${targetSec} -ar 44100 -ac 1 ${codec} "${tempOutputPath}"`;
   const result = await runFFmpegCommand(command);
 
   if (!result.success) {
@@ -86,8 +89,8 @@ export async function fitAudioToSlot(
   });
 
   let finalDurationMs = await getMediaDurationMs(cleanPath);
-  if (finalDurationMs <= 0) {
-    finalDurationMs = Math.round(actualDurationMs / targetRatio);
+  if (finalDurationMs <= 0 || finalDurationMs > slotDurationMs) {
+    finalDurationMs = slotDurationMs;
   }
 
   return {

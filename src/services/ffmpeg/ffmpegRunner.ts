@@ -1,3 +1,4 @@
+import * as FileSystem from 'expo-file-system';
 import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 
 export interface FFmpegRunResult {
@@ -47,21 +48,41 @@ export async function runFFmpegCommand(
 }
 
 /**
- * Gets media duration in milliseconds using FFprobeKit.
+ * Gets media duration in milliseconds using FFprobeKit with robust header/file size fallback.
  */
 export async function getMediaDurationMs(filePath: string): Promise<number> {
+  const cleanPath = filePath.replace(/^file:\/\//, '');
+
   try {
-    const session = await FFprobeKit.getMediaInformationAsync(filePath);
+    const session = await FFprobeKit.getMediaInformationAsync(cleanPath);
     const mediaInfo = session.getMediaInformation();
     if (mediaInfo) {
       const durationVal = mediaInfo.getDuration();
       if (durationVal !== undefined && durationVal !== null) {
-        return Math.round(Number(durationVal) * 1000);
+        const parsed = Math.round(Number(durationVal) * 1000);
+        if (parsed > 0) return parsed;
       }
     }
   } catch (err) {
-    console.warn(`[FFprobe] Failed to probe duration for ${filePath}:`, err);
+    console.warn(`[FFprobe] Failed to probe duration for ${cleanPath}:`, err);
   }
+
+  // Fallback: estimate from file size if FFprobe unavailable
+  try {
+    const uri = filePath.startsWith('file://') ? filePath : `file://${cleanPath}`;
+    const fileInfo = await FileSystem.getInfoAsync(uri);
+    if (fileInfo.exists && fileInfo.size && fileInfo.size > 44) {
+      if (cleanPath.toLowerCase().endsWith('.wav')) {
+        // 44100 Hz mono 16-bit PCM = 88200 bytes/sec = 88.2 bytes/ms
+        const dataBytes = fileInfo.size - 44;
+        return Math.round(dataBytes / 88.2);
+      } else if (cleanPath.toLowerCase().endsWith('.mp3')) {
+        // Approximate 128 kbps MP3 = 16 bytes/ms
+        return Math.round(fileInfo.size / 16);
+      }
+    }
+  } catch {}
+
   return 0;
 }
 

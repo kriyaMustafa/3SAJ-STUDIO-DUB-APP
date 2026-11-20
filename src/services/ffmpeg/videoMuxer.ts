@@ -37,20 +37,21 @@ export async function muxVideoWithAudio(
     // -preset veryfast -crf 22 balances maximum visual quality with rapid rendering
     // -c:a aac -ar 44100 -ac 2 -b:a 192k standardizes stereo audio
     // -movflags +faststart moves moov atom to the front to eliminate "Unsupported video" error in Gallery
-    const muxCommand = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v:0 -map 1:a:0 -c:v libx264 -pix_fmt yuv420p -profile:v high -level 4.1 -preset veryfast -crf 22 -c:a aac -ar 44100 -ac 2 -b:a 192k -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
+    // -shortest ensures the output video duration never exceeds the video track duration
+    const muxCommand = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v:0 -map 1:a:0 -c:v libx264 -pix_fmt yuv420p -profile:v high -level 4.1 -preset veryfast -crf 22 -c:a aac -ar 44100 -ac 2 -b:a 192k -shortest -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
 
     let result = await runFFmpegCommand(muxCommand);
 
     if (!result.success) {
       console.warn('[VideoMuxer] Primary H.264 transcode attempt failed, trying generic stream mapping:', result.outputLogs);
-      // Fallback 1: try generic stream mapping -map 0:v -map 1:a with exact same universal H.264/AAC settings
-      const fallbackMux = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v -map 1:a -c:v libx264 -pix_fmt yuv420p -profile:v high -level 4.1 -preset veryfast -crf 22 -c:a aac -ar 44100 -ac 2 -b:a 192k -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
+      // Fallback 1: try generic stream mapping -map 0:v -map 1:a with exact same universal H.264/AAC settings and -shortest
+      const fallbackMux = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v -map 1:a -c:v libx264 -pix_fmt yuv420p -profile:v high -level 4.1 -preset veryfast -crf 22 -c:a aac -ar 44100 -ac 2 -b:a 192k -shortest -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
       result = await runFFmpegCommand(fallbackMux);
 
       if (!result.success) {
         console.warn('[VideoMuxer] Generic stream mapping failed, attempting fast stream copy fallback:', result.outputLogs);
-        // Fallback 2: Stream copy video track with standardized AAC audio
-        const copyFallback = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -ar 44100 -ac 2 -b:a 192k -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
+        // Fallback 2: Stream copy video track with standardized AAC audio and -shortest
+        const copyFallback = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -ar 44100 -ac 2 -b:a 192k -shortest -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
         result = await runFFmpegCommand(copyFallback);
 
         if (!result.success) {
