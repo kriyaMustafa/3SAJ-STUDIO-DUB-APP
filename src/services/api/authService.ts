@@ -376,7 +376,7 @@ export class AuthService {
   /**
    * Log in an existing user.
    */
-  async login(email: string, password: string): Promise<{
+  async login(email: string, password: string, revokeDeviceId?: string): Promise<{
     user: UserProfile;
     tokens: AuthTokens;
     subscription?: SubscriptionInfo | null;
@@ -393,6 +393,7 @@ export class AuthService {
         device_id: deviceId,
         device_name: deviceName,
         platform: Platform.OS,
+        revoke_device_id: revokeDeviceId,
       }),
     }, 20000);
 
@@ -415,7 +416,7 @@ export class AuthService {
   /**
    * Google OAuth 2.0 verification using Google ID Token.
    */
-  async loginWithGoogleToken(idToken: string, profileHints?: { email?: string; fullName?: string; googleId?: string }): Promise<{
+  async loginWithGoogleToken(idToken: string, profileHints?: { email?: string; fullName?: string; googleId?: string; revokeDeviceId?: string }): Promise<{
     user: UserProfile;
     tokens: AuthTokens;
     subscription?: SubscriptionInfo | null;
@@ -434,6 +435,7 @@ export class AuthService {
         device_id: deviceId,
         device_name: deviceName,
         platform: Platform.OS,
+        revoke_device_id: profileHints?.revokeDeviceId,
       }),
     }, 25000);
 

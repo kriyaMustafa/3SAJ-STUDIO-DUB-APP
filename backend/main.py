@@ -80,6 +80,7 @@ class LoginRequest(BaseModel):
     device_id: str
     device_name: Optional[str] = "Android Device"
     platform: Optional[str] = "android"
+    revoke_device_id: Optional[str] = None
 
 GOOGLE_WEB_CLIENT_ID = os.environ.get(
     "GOOGLE_WEB_CLIENT_ID",
@@ -95,6 +96,7 @@ class GoogleAuthRequest(BaseModel):
     device_id: str
     device_name: Optional[str] = "Android Device"
     platform: Optional[str] = "android"
+    revoke_device_id: Optional[str] = None
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
@@ -191,6 +193,16 @@ def login_user(req: LoginRequest):
                 raise HTTPException(status_code=403, detail="User account is suspended")
 
         user_id = user["id"]
+
+        # If user explicitly requested to revoke an existing device to free up slot
+        if req.revoke_device_id:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE user_devices SET is_active = FALSE, refresh_token_hash = NULL WHERE user_id = %s AND device_id = %s;",
+                    (user_id, req.revoke_device_id.strip())
+                )
+                conn.commit()
+
         tokens = create_tokens(user_id, email, req.device_id)
 
         # Register device session (enforcing max 2 devices)
@@ -327,6 +339,15 @@ def google_auth(req: GoogleAuthRequest):
 
         if not user or not user["is_active"]:
             raise HTTPException(status_code=403, detail="User account is suspended")
+
+        # If user explicitly requested to revoke an existing device to free up slot
+        if req.revoke_device_id:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE user_devices SET is_active = FALSE, refresh_token_hash = NULL WHERE user_id = %s AND device_id = %s;",
+                    (user_id, req.revoke_device_id.strip())
+                )
+                conn.commit()
 
         tokens = create_tokens(user_id, email, req.device_id)
 

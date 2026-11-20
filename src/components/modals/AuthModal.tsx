@@ -82,6 +82,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [emailLoading, setEmailLoading] = useState(false);
+  const [lastAuthAttempt, setLastAuthAttempt] = useState<{
+    idToken?: string;
+    userProfile?: any;
+    email?: string;
+    password?: string;
+  } | null>(null);
 
   // Device limit handling (max 2 active phones)
   const [deviceLimitExceeded, setDeviceLimitExceeded] = useState(false);
@@ -139,6 +145,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         throw new Error('Google Sign-In completed, but no ID token was returned.');
       }
 
+      setLastAuthAttempt({ idToken, userProfile });
+
       // Verify ID token on backend and receive JWT session
       const res = await authService.loginWithGoogleToken(idToken, {
         email: userProfile?.email,
@@ -193,6 +201,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     try {
       setEmailLoading(true);
       setErrorMsg(null);
+      setLastAuthAttempt({ email: email.trim(), password: password.trim() });
       const res = await authService.login(email.trim(), password.trim());
       onAuthSuccess(res.user);
       onClose();
@@ -206,15 +215,51 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const handleRevokeDevice = async (deviceId: string) => {
     try {
       setLoading(true);
-      const success = await authService.revokeDevice(deviceId);
-      if (success) {
-        Alert.alert('Device Disconnected', 'Session freed! Retrying sign in on this phone...');
+
+      // If user attempted Google Sign-In, exchange ID token with target device revocation
+      if (lastAuthAttempt?.idToken) {
+        const res = await authService.loginWithGoogleToken(lastAuthAttempt.idToken, {
+          email: lastAuthAttempt.userProfile?.email,
+          fullName: lastAuthAttempt.userProfile?.name,
+          googleId: lastAuthAttempt.userProfile?.id,
+          revokeDeviceId: deviceId,
+        });
         setDeviceLimitExceeded(false);
         setActiveDevices([]);
-        await handleGoogleSignIn();
-      } else {
-        Alert.alert('Error', 'Failed to disconnect device.');
+        onAuthSuccess(res.user);
+        onClose();
+        return;
       }
+
+      // If user attempted email sign in
+      if (lastAuthAttempt?.email && lastAuthAttempt?.password) {
+        const res = await authService.login(lastAuthAttempt.email, lastAuthAttempt.password, deviceId);
+        setDeviceLimitExceeded(false);
+        setActiveDevices([]);
+        onAuthSuccess(res.user);
+        onClose();
+        return;
+      }
+
+      // Fallback: trigger fresh Google auth with revocation request
+      const signinResult = await GoogleSignin.signIn();
+      const idToken = signinResult?.data?.idToken || (signinResult as any)?.idToken;
+      const userProfile = signinResult?.data?.user || (signinResult as any)?.user;
+      if (idToken) {
+        const res = await authService.loginWithGoogleToken(idToken, {
+          email: userProfile?.email,
+          fullName: userProfile?.name,
+          googleId: userProfile?.id,
+          revokeDeviceId: deviceId,
+        });
+        setDeviceLimitExceeded(false);
+        setActiveDevices([]);
+        onAuthSuccess(res.user);
+        onClose();
+        return;
+      }
+
+      Alert.alert('Error', 'Please tap Continue with Google to authenticate and disconnect device.');
     } catch (e: any) {
       Alert.alert('Error', e.message || 'Could not disconnect device.');
     } finally {
