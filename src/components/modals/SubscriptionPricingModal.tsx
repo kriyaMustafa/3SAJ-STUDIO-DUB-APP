@@ -131,12 +131,12 @@ export const SubscriptionPricingModal: React.FC<SubscriptionPricingModalProps> =
   const handleSelectPlan = (plan: PlanOption, amountToCharge: number) => {
     if (!userId || userId === 'anonymous_user') {
       Alert.alert(
-        '📝 Account Registration Required',
-        'Please register or sign in first to select and pay for a subscription plan.',
+        '🔐 Sign In Required',
+        'Please sign in with your Google account to select and pay for a subscription plan.',
         [
           { text: 'Cancel', style: 'cancel' },
           {
-            text: 'Register / Sign In',
+            text: 'Sign In with Google',
             onPress: () => {
               onClose();
               onRequestAuth?.();

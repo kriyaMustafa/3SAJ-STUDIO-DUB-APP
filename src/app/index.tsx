@@ -69,14 +69,13 @@ export default function ProjectDashboardScreen() {
   const handleOpenBuyPlan = () => {
     if (!currentUser) {
       Alert.alert(
-        '📝 Account Registration Required',
-        'Please register or sign in first to subscribe to a 3SAJ Studio plan. Your subscription will be safely tied to your account across your devices.',
+        '🔐 Sign In Required',
+        'Please sign in with your Google account to subscribe to a 3SAJ Studio plan. Your subscription will be safely tied to your account across your devices.',
         [
           { text: 'Cancel', style: 'cancel' },
           {
-            text: 'Register / Sign In',
+            text: 'Sign In with Google',
             onPress: () => {
-              setAuthInitialTab('REGISTER');
               setAuthModalVisible(true);
             },
           },

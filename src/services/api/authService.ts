@@ -377,6 +377,53 @@ export class AuthService {
   }
 
   /**
+   * Google OAuth 2.0 verification using Google ID Token.
+   */
+  async loginWithGoogleToken(idToken: string, profileHints?: { email?: string; fullName?: string; googleId?: string }): Promise<{
+    user: UserProfile;
+    tokens: AuthTokens;
+    subscription?: SubscriptionInfo | null;
+  }> {
+    const deviceId = await this.getDeviceId();
+    const deviceName = await this.getDeviceName();
+
+    const response = await fetch(`${this.backendBaseUrl}/api/auth/google`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id_token: idToken,
+        email: profileHints?.email,
+        google_id: profileHints?.googleId,
+        full_name: profileHints?.fullName,
+        device_id: deviceId,
+        device_name: deviceName,
+        platform: Platform.OS,
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      if (response.status === 403 && data.detail?.error_code === 'DEVICE_LIMIT_EXCEEDED') {
+        const err: any = new Error(data.detail.message);
+        err.code = 'DEVICE_LIMIT_EXCEEDED';
+        err.active_devices = data.detail.active_devices;
+        throw err;
+      }
+      throw new Error(data.detail?.message || data.detail || 'Google sign-in failed');
+    }
+
+    if (data?.user) {
+      const uid = data.user.id || (data.user as any).user_id;
+      data.user.id = uid;
+      data.user.user_id = uid;
+    }
+
+    await this.storeTokens(data.tokens);
+    await this.storeUserProfile(data.user, data.subscription);
+    return data;
+  }
+
+  /**
    * Google OAuth login / registration with account linking.
    */
   async loginWithGoogle(email: string, googleId: string, fullName?: string): Promise<{

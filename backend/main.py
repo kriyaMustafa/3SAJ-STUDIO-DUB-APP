@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 import requests
 import yt_dlp
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
 
 from database import get_db_connection
 from auth import (
@@ -79,9 +81,15 @@ class LoginRequest(BaseModel):
     device_name: Optional[str] = "Android Device"
     platform: Optional[str] = "android"
 
+GOOGLE_WEB_CLIENT_ID = os.environ.get(
+    "GOOGLE_WEB_CLIENT_ID",
+    "76120676265-nh7sstgffij29s3qukarj5eil28rbfj0.apps.googleusercontent.com"
+)
+
 class GoogleAuthRequest(BaseModel):
-    email: str
-    google_id: str
+    id_token: Optional[str] = None
+    email: Optional[str] = None
+    google_id: Optional[str] = None
     full_name: Optional[str] = None
     avatar_url: Optional[str] = None
     device_id: str
@@ -155,67 +163,10 @@ def health_check():
 
 @app.post("/api/auth/register")
 def register_user(req: RegisterRequest):
-    email = req.email.strip().lower()
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="Invalid email address")
-    if len(req.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    if not req.device_id:
-        raise HTTPException(status_code=400, detail="Device ID is required")
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            # Check if user email already exists
-            cur.execute("SELECT id FROM users WHERE email = %s;", (email,))
-            existing = cur.fetchone()
-            if existing:
-                raise HTTPException(status_code=400, detail="An account with this email already exists. Please log in.")
-
-            # Create user
-            user_id = str(uuid.uuid4())
-            pw_hash = hash_password(req.password)
-            cur.execute(
-                """
-                INSERT INTO users (id, email, hashed_password, full_name, is_active, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, TRUE, NOW(), NOW())
-                RETURNING id, email, full_name;
-                """,
-                (user_id, email, pw_hash, req.full_name or email.split("@")[0])
-            )
-            user = cur.fetchone()
-
-            # Record local auth identity
-            cur.execute(
-                """
-                INSERT INTO user_auth_identities (id, user_id, provider, provider_user_id, provider_email, created_at)
-                VALUES (%s, %s, 'local', %s, %s, NOW());
-                """,
-                (str(uuid.uuid4()), user_id, email, email)
-            )
-            conn.commit()
-
-        # Generate tokens
-        tokens = create_tokens(user_id, email, req.device_id)
-
-        # Register device session (enforcing max 2 devices)
-        device = register_device_session(
-            conn=conn,
-            user_id=user_id,
-            device_id=req.device_id,
-            device_name=req.device_name or "Android Device",
-            platform=req.platform or "android",
-            refresh_token=tokens["refresh_token"]
-        )
-
-        return {
-            "user": {
-                "id": user["id"],
-                "email": user["email"],
-                "full_name": user["full_name"]
-            },
-            "device": device,
-            "tokens": tokens
-        }
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Manual email registration is disabled. Please sign in with Google."
+    )
 
 @app.post("/api/auth/login")
 def login_user(req: LoginRequest):
@@ -269,23 +220,61 @@ def login_user(req: LoginRequest):
 @app.post("/api/auth/google")
 def google_auth(req: GoogleAuthRequest):
     """
-    Google OAuth login & registration with secure account linking.
-    Resolves to the same internal user account if email already exists.
+    Google OAuth 2.0 verification & instant authorization (Option A).
+    Verifies Google ID Token against Google Identity Services.
+    Auto-creates the user account in PostgreSQL and links Google identity.
     """
-    email = req.email.strip().lower()
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="Valid Google email required")
-    if not req.google_id:
-        raise HTTPException(status_code=400, detail="Google User ID required")
     if not req.device_id:
         raise HTTPException(status_code=400, detail="Device ID is required")
 
+    email = req.email.strip().lower() if req.email else None
+    google_id = req.google_id
+    full_name = req.full_name
+
+    # 1. Cryptographically verify id_token if provided
+    if req.id_token:
+        try:
+            id_info = google_id_token.verify_oauth2_token(
+                req.id_token,
+                google_requests.Request(),
+                GOOGLE_WEB_CLIENT_ID
+            )
+            email = id_info.get("email", "").lower().strip()
+            google_id = id_info.get("sub")
+            full_name = id_info.get("name") or full_name
+        except Exception as e:
+            logger.warning(f"google-auth verify failed ({e}), attempting tokeninfo endpoint fallback...")
+            try:
+                resp = requests.get(
+                    f"https://oauth2.googleapis.com/tokeninfo?id_token={req.id_token}",
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    id_info = resp.json()
+                    email = id_info.get("email", "").lower().strip()
+                    google_id = id_info.get("sub")
+                    full_name = id_info.get("name") or full_name
+                else:
+                    raise HTTPException(status_code=401, detail="Invalid Google ID Token")
+            except HTTPException:
+                raise
+            except Exception as net_err:
+                raise HTTPException(status_code=401, detail=f"Failed to verify Google token: {net_err}")
+
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid verified Google email required")
+    if not google_id:
+        raise HTTPException(status_code=400, detail="Google User ID required")
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            # 1. Check if identity already linked
+            # Ensure users table has google_id column if not exists
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255);")
+
+            # 1. Check if identity already linked in user_auth_identities
             cur.execute(
                 "SELECT user_id FROM user_auth_identities WHERE provider = 'google' AND provider_user_id = %s;",
-                (req.google_id,)
+                (google_id,)
             )
             identity = cur.fetchone()
 
@@ -300,35 +289,39 @@ def google_auth(req: GoogleAuthRequest):
 
                 if user:
                     user_id = user["id"]
-                    # Link Google identity to existing account
+                    cur.execute(
+                        "UPDATE users SET google_id = %s, updated_at = NOW() WHERE id = %s AND google_id IS NULL;",
+                        (google_id, user_id)
+                    )
+                    # Link Google identity
                     cur.execute(
                         """
-                        INSERT INTO user_auth_identities (id, user_id, provider, provider_user_id, provider_email, created_at)
-                        VALUES (%s, %s, 'google', %s, %s, NOW())
-                        ON CONFLICT (provider, provider_user_id) DO NOTHING;
+                        INSERT INTO user_auth_identities (id, user_id, provider, provider_user_id, provider_email, created_at, last_sign_in_at)
+                        VALUES (%s, %s, 'google', %s, %s, NOW(), NOW())
+                        ON CONFLICT (provider, provider_user_id) DO UPDATE SET last_sign_in_at = NOW();
                         """,
-                        (str(uuid.uuid4()), user_id, req.google_id, email)
+                        (str(uuid.uuid4()), user_id, google_id, email)
                     )
                 else:
-                    # 3. Create new user account
+                    # 3. Create new user account (password_hash is nullable)
                     user_id = str(uuid.uuid4())
                     cur.execute(
                         """
-                        INSERT INTO users (id, email, full_name, is_active, created_at, updated_at)
-                        VALUES (%s, %s, %s, TRUE, NOW(), NOW())
+                        INSERT INTO users (id, email, full_name, google_id, is_active, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, TRUE, NOW(), NOW())
                         RETURNING id, email, full_name;
                         """,
-                        (user_id, email, req.full_name or email.split("@")[0])
+                        (user_id, email, full_name or email.split("@")[0], google_id)
                     )
                     user = cur.fetchone()
 
                     # Link Google identity
                     cur.execute(
                         """
-                        INSERT INTO user_auth_identities (id, user_id, provider, provider_user_id, provider_email, created_at)
-                        VALUES (%s, %s, 'google', %s, %s, NOW());
+                        INSERT INTO user_auth_identities (id, user_id, provider, provider_user_id, provider_email, created_at, last_sign_in_at)
+                        VALUES (%s, %s, 'google', %s, %s, NOW(), NOW());
                         """,
-                        (str(uuid.uuid4()), user_id, req.google_id, email)
+                        (str(uuid.uuid4()), user_id, google_id, email)
                     )
             conn.commit()
 
@@ -352,6 +345,7 @@ def google_auth(req: GoogleAuthRequest):
         return {
             "user": {
                 "id": user["id"],
+                "user_id": user["id"],
                 "email": user["email"],
                 "full_name": user["full_name"]
             },
