@@ -145,22 +145,23 @@ export async function prepareAndSpeedAdjustTtsClips(
 
     const outputPath = `${preparedDir}/fitted_${seg.id}.wav`;
     const cleanOutputPath = outputPath.replace(/^file:\/\//, '');
-    const targetSec = (slotDurationMs / 1000).toFixed(4);
 
-    // If actual TTS duration exceeds subtitle duration, apply atempo speedup to fit EXACTLY into slotDurationMs
-    if (actualDurationMs > slotDurationMs + 20) {
-      const rawRatio = actualDurationMs / slotDurationMs;
+    // If actual TTS duration exceeds subtitle duration, apply atempo speedup so 100% of speech fits into slotDurationMs
+    if (actualDurationMs > slotDurationMs) {
+      // Aim for 95% of slot (or slot - 80ms) so speech completes cleanly with natural breathing room
+      const targetDurationMs = Math.max(80, Math.min(slotDurationMs - 80, slotDurationMs * 0.95));
+      const rawRatio = actualDurationMs / targetDurationMs;
       const targetRatio = Math.min(4.0, Math.max(1.02, rawRatio));
       const atempoFilter = buildAtempoFilter(targetRatio, 4.0);
 
-      // Accelerate voice with atempo and clamp with -t ${targetSec} so it never exceeds slotDurationMs
-      const speedCmd = `-y -i "${sourcePath}" -filter:a "${atempoFilter}" -t ${targetSec} -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
+      // Accelerate voice with atempo into 44100Hz mono PCM WAV without -t chopping off words!
+      const speedCmd = `-y -i "${sourcePath}" -filter:a "${atempoFilter}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
       const res = await runFFmpegCommand(speedCmd);
 
       if (res.success) {
         let finalDur = await getMediaDurationMs(cleanOutputPath);
-        if (finalDur <= 0 || finalDur > slotDurationMs) {
-          finalDur = slotDurationMs;
+        if (finalDur <= 0) {
+          finalDur = Math.round(actualDurationMs / targetRatio);
         }
         processed.push({
           ...seg,
@@ -168,21 +169,21 @@ export async function prepareAndSpeedAdjustTtsClips(
           durationMs: finalDur,
         });
       } else {
-        // Fallback: convert directly with duration clamping
-        const fallbackCmd = `-y -i "${sourcePath}" -t ${targetSec} -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
+        // Fallback: standard conversion
+        const fallbackCmd = `-y -i "${sourcePath}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
         const fbRes = await runFFmpegCommand(fallbackCmd);
         processed.push({
           ...seg,
           audioPath: fbRes.success ? outputPath : sourcePath,
-          durationMs: slotDurationMs,
+          durationMs: actualDurationMs,
         });
       }
     } else {
-      // Audio already fits inside slot: standardize to 44100 Hz mono PCM WAV and clamp to slot
-      const stdCmd = `-y -i "${sourcePath}" -t ${targetSec} -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
+      // Audio already fits inside slot: standardize to 44100 Hz mono PCM WAV without cutting any words
+      const stdCmd = `-y -i "${sourcePath}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
       const res = await runFFmpegCommand(stdCmd);
       let finalDur = res.success ? await getMediaDurationMs(cleanOutputPath) : actualDurationMs;
-      if (finalDur <= 0 || finalDur > slotDurationMs) finalDur = actualDurationMs;
+      if (finalDur <= 0) finalDur = actualDurationMs;
       processed.push({
         ...seg,
         audioPath: res.success ? outputPath : sourcePath,

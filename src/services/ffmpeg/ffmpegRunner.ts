@@ -54,12 +54,13 @@ export async function getMediaDurationMs(filePath: string): Promise<number> {
   const cleanPath = filePath.replace(/^file:\/\//, '');
 
   try {
-    const session = await FFprobeKit.getMediaInformationAsync(cleanPath);
+    // Note: getMediaInformation (NOT getMediaInformationAsync) waits synchronously for the probe to finish
+    const session = await FFprobeKit.getMediaInformation(cleanPath, 5000);
     const mediaInfo = session.getMediaInformation();
     if (mediaInfo) {
       const durationVal = mediaInfo.getDuration();
       if (durationVal !== undefined && durationVal !== null) {
-        const parsed = Math.round(Number(durationVal) * 1000);
+        const parsed = Math.round(parseFloat(String(durationVal)) * 1000);
         if (parsed > 0) return parsed;
       }
     }
@@ -77,8 +78,8 @@ export async function getMediaDurationMs(filePath: string): Promise<number> {
         const dataBytes = fileInfo.size - 44;
         return Math.round(dataBytes / 88.2);
       } else if (cleanPath.toLowerCase().endsWith('.mp3')) {
-        // Approximate 128 kbps MP3 = 16 bytes/ms
-        return Math.round(fileInfo.size / 16);
+        // Edge-TTS standard output is audio-24khz-48kbitrate-mono-mp3 = 48 kbps = 6,000 bytes/sec = 6.0 bytes/ms
+        return Math.round(fileInfo.size / 6.0);
       }
     }
   } catch {}

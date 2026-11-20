@@ -12,23 +12,23 @@ export interface TimeStretchResult {
 /**
  * Builds chained atempo filters for FFmpeg.
  * FFmpeg atempo only supports 0.5 to 2.0 per filter instance.
- * For speedups > 2.0x, multiple atempo filters must be chained (e.g. atempo=2.0,atempo=1.5 for 3.0x).
- * Supports ratios up to 4.0x so long TTS speech cleanly fits into short subtitle segments.
+ * For speedups > 2.0x, two balanced atempo filters (using sqrt) produce optimal audio clarity.
+ * Supports ratios up to 4.0x so long TTS speech cleanly fits into short subtitle segments without distortion.
  */
 export function buildAtempoFilter(targetRatio: number, maxSpeed: number = 4.0): string {
   let ratio = targetRatio;
   if (!isFinite(ratio) || ratio <= 1.01) return 'atempo=1.0';
   if (ratio > maxSpeed) ratio = maxSpeed;
 
-  const filters: string[] = [];
-  while (ratio > 2.0) {
-    filters.push('atempo=2.0');
-    ratio /= 2.0;
+  if (ratio <= 2.0) {
+    return `atempo=${ratio.toFixed(4)}`;
   }
-  if (ratio > 1.01) {
-    filters.push(`atempo=${ratio.toFixed(4)}`);
-  }
-  return filters.length > 0 ? filters.join(',') : 'atempo=1.0';
+
+  // For speedups between 2.0x and 4.0x, balance across two chained filters
+  // e.g. for 2.5x: sqrt(2.5) ~= 1.5811 -> atempo=1.5811,atempo=1.5811 (both well within [0.5, 2.0])
+  const stage = Math.min(2.0, Math.sqrt(ratio));
+  const stage2 = Math.min(2.0, ratio / stage);
+  return `atempo=${stage.toFixed(4)},atempo=${stage2.toFixed(4)}`;
 }
 
 /**
@@ -44,8 +44,8 @@ export async function fitAudioToSlot(
   const cleanPath = audioPath.replace(/^file:\/\//, '');
   const actualDurationMs = await getMediaDurationMs(cleanPath);
 
-  // If slot duration is invalid or audio already fits within slot (with small 20ms tolerance), no stretching needed
-  if (slotDurationMs <= 0 || actualDurationMs <= slotDurationMs + 20) {
+  // If slot duration is invalid or audio already fits within slot, no stretching needed
+  if (slotDurationMs <= 0 || actualDurationMs <= slotDurationMs) {
     return {
       stretched: false,
       ratio: 1.0,
@@ -55,17 +55,19 @@ export async function fitAudioToSlot(
     };
   }
 
-  // Calculate speedup ratio needed to fit cleanly into slotDurationMs, up to maxAtempo (default 4.0x)
-  const targetRatio = Math.min(maxAtempo, Math.max(1.02, actualDurationMs / slotDurationMs));
+  // Target 95% of slot (or slot - 80ms) so speech completes cleanly with natural breathing room
+  const targetDurationMs = Math.max(100, Math.min(slotDurationMs - 80, slotDurationMs * 0.95));
+  const rawRatio = actualDurationMs / targetDurationMs;
+  const targetRatio = Math.min(maxAtempo, Math.max(1.02, rawRatio));
   const atempoFilter = buildAtempoFilter(targetRatio, maxAtempo);
   const isMp3 = cleanPath.toLowerCase().endsWith('.mp3');
   const tempOutputPath = isMp3
     ? cleanPath.replace(/\.mp3$/i, '_stretched.mp3')
     : cleanPath.replace(/\.wav$/i, '_stretched.wav');
 
-  const targetSec = (slotDurationMs / 1000).toFixed(4);
   const codec = isMp3 ? '-c:a libmp3lame -b:a 128k' : '-c:a pcm_s16le';
-  const command = `-y -i "${cleanPath}" -filter:a "${atempoFilter}" -t ${targetSec} -ar 44100 -ac 1 ${codec} "${tempOutputPath}"`;
+  // Note: We do NOT use -t here so atempo processes 100% of speech without cutting off any words or syllables!
+  const command = `-y -i "${cleanPath}" -filter:a "${atempoFilter}" -ar 44100 -ac 1 ${codec} "${tempOutputPath}"`;
   const result = await runFFmpegCommand(command);
 
   if (!result.success) {
@@ -89,8 +91,8 @@ export async function fitAudioToSlot(
   });
 
   let finalDurationMs = await getMediaDurationMs(cleanPath);
-  if (finalDurationMs <= 0 || finalDurationMs > slotDurationMs) {
-    finalDurationMs = slotDurationMs;
+  if (finalDurationMs <= 0) {
+    finalDurationMs = Math.round(actualDurationMs / targetRatio);
   }
 
   return {
