@@ -7,7 +7,7 @@ import logging
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Depends, Header, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse
 from urllib.parse import quote_plus, unquote_plus
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
@@ -98,6 +98,13 @@ class GoogleAuthRequest(BaseModel):
     device_id: str
     device_name: Optional[str] = "Android Device"
     platform: Optional[str] = "android"
+    revoke_device_id: Optional[str] = None
+
+class WebGoogleCompleteRequest(BaseModel):
+    session_id: str
+    device_id: str
+    device_name: Optional[str] = "Android Device"
+    id_token: str
     revoke_device_id: Optional[str] = None
 
 class RefreshTokenRequest(BaseModel):
@@ -376,6 +383,253 @@ def google_auth(req: GoogleAuthRequest):
             "tokens": tokens,
             "subscription": subscription
         }
+
+def ensure_web_auth_table():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS web_auth_sessions (
+                        session_id VARCHAR(64) PRIMARY KEY,
+                        device_id VARCHAR(128) NOT NULL,
+                        device_name VARCHAR(128),
+                        platform VARCHAR(32) DEFAULT 'android',
+                        status VARCHAR(32) DEFAULT 'pending',
+                        user_data JSONB,
+                        tokens JSONB,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '15 minutes')
+                    );
+                """)
+                conn.commit()
+    except Exception as e:
+        logger.warning(f"Error ensuring web_auth_sessions table: {e}")
+
+@app.get("/api/auth/google/web", response_class=HTMLResponse)
+def google_web_login_page(session_id: str, device_id: str, device_name: Optional[str] = "Android Device"):
+    """
+    Renders browser-based Google OAuth login page for devices without Google Play Services (e.g. Huawei, Honor).
+    """
+    ensure_web_auth_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO web_auth_sessions (session_id, device_id, device_name, status, created_at, expires_at)
+                VALUES (%s, %s, %s, 'pending', NOW(), NOW() + INTERVAL '15 minutes')
+                ON CONFLICT (session_id) DO UPDATE SET device_id = %s, device_name = %s, status = 'pending', expires_at = NOW() + INTERVAL '15 minutes';
+                """,
+                (session_id, device_id, device_name, device_id, device_name)
+            )
+            conn.commit()
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Sign In - 3SAJ Studio</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+    body {{
+      background: #0B1120;
+      color: #F8FAFC;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }}
+    .card {{
+      background: #1E293B;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 32px 24px;
+      max-width: 420px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+    }}
+    .badge {{
+      display: inline-block;
+      background: rgba(56, 189, 248, 0.15);
+      color: #38BDF8;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      margin-bottom: 16px;
+    }}
+    h1 {{
+      font-size: 24px;
+      font-weight: 800;
+      color: #FFFFFF;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }}
+    p {{
+      color: #94A3B8;
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 28px;
+    }}
+    .google-btn-wrapper {{
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin-bottom: 20px;
+      min-height: 48px;
+    }}
+    #status-msg {{
+      margin-top: 16px;
+      font-size: 14px;
+      color: #38BDF8;
+      min-height: 24px;
+    }}
+    .btn-return {{
+      display: none;
+      margin-top: 16px;
+      background: #0284C7;
+      color: #FFFFFF;
+      text-decoration: none;
+      font-weight: 700;
+      padding: 14px 20px;
+      border-radius: 12px;
+      font-size: 15px;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">Web Authentication</div>
+    <h1>3SAJ STUDIO</h1>
+    <p>Sign in with your Google Account to activate your subscription and translation quota on this device.</p>
+
+    <div class="google-btn-wrapper">
+      <div id="g_id_onload"
+           data-client_id="{GOOGLE_WEB_CLIENT_ID}"
+           data-callback="handleCredentialResponse"
+           data-auto_prompt="false">
+      </div>
+      <div class="g_id_signin"
+           data-type="standard"
+           data-shape="pill"
+           data-theme="filled_blue"
+           data-text="continue_with"
+           data-size="large"
+           data-logo_alignment="left">
+      </div>
+    </div>
+
+    <div id="status-msg"></div>
+    <a id="btn-return" class="btn-return" href="#">Open 3SAJ Studio App</a>
+  </div>
+
+  <script>
+    async function handleCredentialResponse(response) {{
+      const statusBox = document.getElementById('status-msg');
+      const returnBtn = document.getElementById('btn-return');
+      statusBox.innerText = 'Verifying with Google...';
+
+      try {{
+        const res = await fetch('/api/auth/google/web/complete', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{
+            session_id: '{session_id}',
+            device_id: '{device_id}',
+            device_name: '{device_name}',
+            id_token: response.credential
+          }})
+        }});
+
+        const data = await res.json();
+        if (res.ok && data.success) {{
+          statusBox.innerHTML = '<span style="color:#10B981;font-weight:bold;">Sign-in successful!</span><br><span style="font-size:12px;color:#94A3B8;">Returning to 3SAJ Studio...</span>';
+          returnBtn.href = data.redirect_url;
+          returnBtn.style.display = 'inline-block';
+          window.location.href = data.redirect_url;
+        }} else {{
+          statusBox.innerHTML = '<span style="color:#EF4444;">' + (data.detail || 'Sign-in failed. Please try again.') + '</span>';
+        }}
+      }} catch (err) {{
+        statusBox.innerHTML = '<span style="color:#EF4444;">Connection error. Please try again.</span>';
+      }}
+    }}
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+@app.post("/api/auth/google/web/complete")
+def complete_web_google_auth(req: WebGoogleCompleteRequest):
+    """Completes web Google Sign-In and stores authenticated tokens for the session."""
+    auth_req = GoogleAuthRequest(
+        id_token=req.id_token,
+        device_id=req.device_id,
+        device_name=req.device_name,
+        platform="android",
+        revoke_device_id=req.revoke_device_id
+    )
+    auth_result = google_auth(auth_req)
+
+    user = auth_result["user"]
+    tokens = auth_result["tokens"]
+
+    ensure_web_auth_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE web_auth_sessions
+                SET status = 'authenticated',
+                    user_data = %s,
+                    tokens = %s
+                WHERE session_id = %s;
+                """,
+                (json.dumps(user), json.dumps(tokens), req.session_id)
+            )
+            conn.commit()
+
+    redirect_url = f"sajstudio://auth/callback?session_id={req.session_id}&access_token={tokens['access_token']}&refresh_token={tokens['refresh_token']}&user_id={user['id']}&email={quote_plus(user['email'])}&full_name={quote_plus(user['full_name'] or '')}"
+
+    return {
+        "success": True,
+        "redirect_url": redirect_url,
+        "user": user,
+        "tokens": tokens
+    }
+
+@app.get("/api/auth/session/check")
+def check_web_auth_session(session_id: str):
+    """Poll endpoint for mobile app to check if web authentication completed."""
+    ensure_web_auth_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, user_data, tokens, expires_at FROM web_auth_sessions WHERE session_id = %s;",
+                (session_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            if row["status"] == "authenticated":
+                user_data = row["user_data"]
+                if isinstance(user_data, str):
+                    user_data = json.loads(user_data)
+                tokens = row["tokens"]
+                if isinstance(tokens, str):
+                    tokens = json.loads(tokens)
+                return {
+                    "status": "authenticated",
+                    "user": user_data,
+                    "tokens": tokens
+                }
+            return {"status": row["status"]}
 
 @app.post("/api/auth/refresh")
 def refresh_access_token(req: RefreshTokenRequest):

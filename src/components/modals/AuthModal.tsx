@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
+  Linking,
 } from 'react-native';
 import {
   X,
@@ -89,6 +90,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     password?: string;
   } | null>(null);
 
+  // Web-based Google Sign-In state for devices without Google Play Services (e.g. Huawei, Honor)
+  const [waitingForWebAuth, setWaitingForWebAuth] = useState(false);
+  const [webAuthSessionId, setWebAuthSessionId] = useState<string | null>(null);
+
   // Device limit handling (max 2 active phones)
   const [deviceLimitExceeded, setDeviceLimitExceeded] = useState(false);
   const [activeDevices, setActiveDevices] = useState<DeviceInfo[]>([]);
@@ -98,8 +103,70 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setErrorMsg(null);
       setDevErrorDetails(false);
       setDeviceLimitExceeded(false);
+      setWaitingForWebAuth(false);
     }
   }, [visible]);
+
+  // Deep Link listener: catches sajstudio://auth/callback from browser Google OAuth
+  useEffect(() => {
+    const handleUrlEvent = async (event: { url: string }) => {
+      if (!event.url || !event.url.startsWith('sajstudio://auth/callback')) return;
+      try {
+        setLoading(true);
+        const user = await authService.handleAuthDeepLink(event.url);
+        if (user) {
+          setWaitingForWebAuth(false);
+          onAuthSuccess(user);
+          onClose();
+        }
+      } catch (err) {
+        console.warn('[DeepLink] Auth error:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    const sub = Linking.addEventListener('url', handleUrlEvent);
+
+    Linking.getInitialURL().then((initUrl) => {
+      if (initUrl && initUrl.startsWith('sajstudio://auth/callback')) {
+        handleUrlEvent({ url: initUrl });
+      }
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, [onAuthSuccess, onClose]);
+
+  // Session poll: periodically checks backend if web login completed in browser
+  useEffect(() => {
+    if (!waitingForWebAuth || !webAuthSessionId) return;
+
+    let isMounted = true;
+    const interval = setInterval(async () => {
+      try {
+        const result = await authService.checkWebAuthSession(webAuthSessionId);
+        if (result && result.status === 'authenticated' && result.user && result.tokens) {
+          if (isMounted) {
+            clearInterval(interval);
+            setWaitingForWebAuth(false);
+            await authService.storeTokens(result.tokens);
+            await authService.storeUserProfile(result.user);
+            onAuthSuccess(result.user);
+            onClose();
+          }
+        }
+      } catch {
+        // Continue polling
+      }
+    }, 2000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [waitingForWebAuth, webAuthSessionId, onAuthSuccess, onClose]);
 
   const handleCopySha1 = async () => {
     try {
@@ -119,6 +186,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
+  // Launch browser-based Google OAuth for devices without Google Play Services
+  const startWebGoogleSignIn = async () => {
+    try {
+      setWaitingForWebAuth(true);
+      setErrorMsg(null);
+
+      const deviceId = await authService.getDeviceId();
+      const deviceName = await authService.getDeviceName();
+      const sessionId = `web_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      setWebAuthSessionId(sessionId);
+
+      const webAuthUrl = `${authService.getBackendUrl()}/api/auth/google/web?session_id=${sessionId}&device_id=${encodeURIComponent(deviceId)}&device_name=${encodeURIComponent(deviceName)}`;
+      await Linking.openURL(webAuthUrl);
+    } catch (err: any) {
+      setWaitingForWebAuth(false);
+      setErrorMsg(err.message || 'Failed to open web sign-in. Please use Email & Password below.');
+    }
+  };
+
   const handleGoogleSignIn = async () => {
     try {
       setLoading(true);
@@ -126,55 +212,71 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setDevErrorDetails(false);
       setDeviceLimitExceeded(false);
 
-      // Verify Google Play Services are available on the Android device
-      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
-
-      // Trigger native Google Account chooser
-      const signinResult = await GoogleSignin.signIn();
-
-      // Extract idToken safely across @react-native-google-signin versions
-      const idToken =
-        signinResult?.data?.idToken ||
-        (signinResult as any)?.idToken;
-
-      const userProfile =
-        signinResult?.data?.user ||
-        (signinResult as any)?.user;
-
-      if (!idToken) {
-        throw new Error('Google Sign-In completed, but no ID token was returned.');
+      // Verify Google Play Services WITHOUT showing the blocking system dialog!
+      // This prevents the "won't run without Google Play services" alert on Huawei / GMS-free devices.
+      let hasPlayServices = false;
+      try {
+        await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: false });
+        hasPlayServices = true;
+      } catch {
+        hasPlayServices = false;
       }
 
-      setLastAuthAttempt({ idToken, userProfile });
+      if (hasPlayServices) {
+        try {
+          // Native In-App Google Sign-In for devices with Google Play Services
+          const signinResult = await GoogleSignin.signIn();
+          const idToken =
+            signinResult?.data?.idToken ||
+            (signinResult as any)?.idToken;
 
-      // Verify ID token on backend and receive JWT session
-      const res = await authService.loginWithGoogleToken(idToken, {
-        email: userProfile?.email,
-        fullName: userProfile?.name,
-        googleId: userProfile?.id,
-      });
+          const userProfile =
+            signinResult?.data?.user ||
+            (signinResult as any)?.user;
 
-      onAuthSuccess(res.user);
-      onClose();
+          if (!idToken) {
+            throw new Error('Google Sign-In completed, but no ID token was returned.');
+          }
+
+          setLastAuthAttempt({ idToken, userProfile });
+
+          // Verify ID token on backend and receive JWT session
+          const res = await authService.loginWithGoogleToken(idToken, {
+            email: userProfile?.email,
+            fullName: userProfile?.name,
+            googleId: userProfile?.id,
+          });
+
+          onAuthSuccess(res.user);
+          onClose();
+          return;
+        } catch (nativeErr: any) {
+          if (nativeErr.code === statusCodes.SIGN_IN_CANCELLED || nativeErr.code === statusCodes.IN_PROGRESS) {
+            return;
+          }
+          if (nativeErr.code === 'DEVICE_LIMIT_EXCEEDED') {
+            setDeviceLimitExceeded(true);
+            setActiveDevices(nativeErr.active_devices || []);
+            setErrorMsg('Maximum 2 devices reached. Disconnect one below to sign in on this phone:');
+            return;
+          }
+          // If native sign-in fails due to missing Play Services, fallback to Web Google Sign-In
+          if (
+            nativeErr.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE ||
+            (nativeErr.message && nativeErr.message.includes('SERVICE_MISSING')) ||
+            (nativeErr.message && nativeErr.message.includes('SERVICE_INVALID'))
+          ) {
+            await startWebGoogleSignIn();
+            return;
+          }
+          throw nativeErr;
+        }
+      } else {
+        // Device lacks Google Play Services (Huawei, Honor, GMS-free ROM):
+        // Automatically open the Web Google Sign-In in the phone's browser!
+        await startWebGoogleSignIn();
+      }
     } catch (err: any) {
-      if (err.code === statusCodes.SIGN_IN_CANCELLED) {
-        // User dismissed the Google dialog, no error needed
-        return;
-      }
-      if (err.code === statusCodes.IN_PROGRESS) {
-        return;
-      }
-      if (err.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
-        setErrorMsg('Google Play Services is not available or needs updating on this device.');
-        return;
-      }
-      if (err.code === 'DEVICE_LIMIT_EXCEEDED') {
-        setDeviceLimitExceeded(true);
-        setActiveDevices(err.active_devices || []);
-        setErrorMsg('Maximum 2 devices reached. Disconnect one below to sign in on this phone:');
-        return;
-      }
-
       const isDevError =
         err.code === '10' ||
         err.code === 10 ||
@@ -369,24 +471,51 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </View>
             )}
 
-            {/* Continue with Google Button */}
-            <TouchableOpacity
-              style={[styles.googleBtn, loading && styles.googleBtnDisabled]}
-              onPress={handleGoogleSignIn}
-              disabled={loading}
-              activeOpacity={0.85}
-            >
-              {loading ? (
-                <ActivityIndicator color="#0F172A" />
-              ) : (
-                <>
-                  <View style={styles.googleIconContainer}>
-                    <GoogleLogo size={20} />
-                  </View>
-                  <Text style={styles.googleBtnText}>Continue with Google</Text>
-                </>
-              )}
-            </TouchableOpacity>
+            {/* Web Authentication Waiting Card (for devices without Play Services) */}
+            {waitingForWebAuth ? (
+              <View style={styles.webAuthCard}>
+                <ActivityIndicator color="#38BDF8" style={{ marginBottom: 10 }} />
+                <Text style={styles.webAuthTitle}>Connecting via Browser...</Text>
+                <Text style={styles.webAuthDesc}>
+                  Please complete sign-in in your phone's browser. The app will automatically connect once done.
+                </Text>
+                <View style={styles.webAuthBtnRow}>
+                  <TouchableOpacity
+                    style={styles.reopenBtn}
+                    onPress={startWebGoogleSignIn}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.reopenBtnText}>Re-open Browser</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.cancelWebBtn}
+                    onPress={() => setWaitingForWebAuth(false)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.cancelWebBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              /* Continue with Google Button */
+              <TouchableOpacity
+                style={[styles.googleBtn, loading && styles.googleBtnDisabled]}
+                onPress={handleGoogleSignIn}
+                disabled={loading}
+                activeOpacity={0.85}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#0F172A" />
+                ) : (
+                  <>
+                    <View style={styles.googleIconContainer}>
+                      <GoogleLogo size={20} />
+                    </View>
+                    <Text style={styles.googleBtnText}>Continue with Google</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
 
             {/* Email Fallback Toggle */}
             <TouchableOpacity
@@ -728,5 +857,57 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '700',
+  },
+  webAuthCard: {
+    backgroundColor: '#1E293B',
+    borderRadius: 14,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+    marginBottom: 8,
+  },
+  webAuthTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  webAuthDesc: {
+    color: '#94A3B8',
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 14,
+  },
+  webAuthBtnRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  reopenBtn: {
+    flex: 1,
+    backgroundColor: '#0284C7',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  reopenBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  cancelWebBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#334155',
+    alignItems: 'center',
+  },
+  cancelWebBtnText: {
+    color: '#CBD5E1',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

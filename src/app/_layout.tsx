@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity } from 'react-native';
+import { View, Text, TouchableOpacity, Linking } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useProjectStore } from '../store/useProjectStore';
+import { authService } from '../services/api/authService';
 
 // Prevent splash screen from auto-hiding outside the component tree
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -56,8 +57,27 @@ export default function RootLayout() {
 
     prepare();
 
+    // Global listener for OAuth deep links (sajstudio://auth/callback)
+    const handleDeepLink = async (event: { url: string }) => {
+      if (event.url && event.url.startsWith('sajstudio://auth/callback')) {
+        try {
+          await authService.handleAuthDeepLink(event.url);
+        } catch (err) {
+          console.warn('[RootLayout] Deep link auth handling error:', err);
+        }
+      }
+    };
+
+    const linkSub = Linking.addEventListener('url', handleDeepLink);
+    Linking.getInitialURL().then((initialUrl) => {
+      if (initialUrl && initialUrl.startsWith('sajstudio://auth/callback')) {
+        handleDeepLink({ url: initialUrl });
+      }
+    });
+
     return () => {
       isMounted = false;
+      linkSub.remove();
     };
   }, [initStore]);
 

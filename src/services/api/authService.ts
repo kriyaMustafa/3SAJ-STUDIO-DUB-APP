@@ -6,6 +6,7 @@
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import queryString from 'query-string';
 
 const DEVICE_ID_KEY = '3saj_studio_device_id';
 const ACCESS_TOKEN_KEY = '3saj_studio_access_token';
@@ -499,6 +500,65 @@ export class AuthService {
     await this.storeTokens(data.tokens);
     await this.storeUserProfile(data.user);
     return data;
+  }
+
+  /**
+   * Checks status of web-based Google authentication session (for devices without Google Play Services).
+   */
+  async checkWebAuthSession(sessionId: string): Promise<{
+    status: 'pending' | 'authenticated' | 'expired';
+    user?: UserProfile;
+    tokens?: AuthTokens;
+  } | null> {
+    try {
+      const response = await this.fetchWithTimeout(
+        `${this.backendBaseUrl}/api/auth/session/check?session_id=${encodeURIComponent(sessionId)}`,
+        { method: 'GET' },
+        8000
+      );
+      if (!response.ok) return null;
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Handles app deep links returned from browser-based Google OAuth (sajstudio://auth/callback).
+   */
+  async handleAuthDeepLink(url: string): Promise<UserProfile | null> {
+    try {
+      const parsed = queryString.parseUrl(url);
+      const query = parsed.query;
+      const accessToken = (query.access_token as string) || '';
+      const refreshToken = (query.refresh_token as string) || '';
+      const userId = (query.user_id as string) || '';
+      const email = (query.email as string) || '';
+      const fullName = (query.full_name as string) || email.split('@')[0];
+
+      if (accessToken && refreshToken && email) {
+        const tokens: AuthTokens = {
+          access_token: accessToken,
+          refresh_token: refreshToken,
+          token_type: 'bearer',
+          expires_in: 86400 * 30,
+        };
+        const user: UserProfile = {
+          id: userId || `usr_${Date.now()}`,
+          user_id: userId || `usr_${Date.now()}`,
+          email,
+          full_name: fullName,
+        };
+
+        await this.storeTokens(tokens);
+        await this.storeUserProfile(user);
+        this.notifyAuthChange(user, null);
+        return user;
+      }
+    } catch (e) {
+      console.warn('Failed parsing auth deep link:', e);
+    }
+    return null;
   }
 
   /**
