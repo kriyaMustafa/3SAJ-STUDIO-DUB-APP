@@ -7,6 +7,8 @@ import logging
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Depends, Header, status
+from fastapi.responses import StreamingResponse
+from urllib.parse import quote_plus, unquote_plus
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 import requests
@@ -1023,6 +1025,132 @@ def convert_vtt_to_srt(vtt_text: str) -> str:
 
     return "\n".join(srt_lines)
 
+def extract_tiktok_media(url: str) -> dict:
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Referer': 'https://www.tiktok.com/'
+    }
+    session = requests.Session()
+    r = session.get(url, headers=headers, allow_redirects=True, timeout=15)
+    if r.status_code != 200:
+        raise Exception(f"Failed to access TikTok page (status {r.status_code})")
+
+    html = r.text
+    # 1. Search in __UNIVERSAL_DATA_FOR_REHYDRATION__
+    m = re.search(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>', html)
+    if m:
+        try:
+            data = json.loads(m.group(1))
+            default_scope = data.get('__DEFAULT_SCOPE__', {})
+            item_info = default_scope.get('webapp.video-detail', {}).get('itemInfo', {}).get('itemStruct', {})
+            title = item_info.get('desc') or 'TikTok_Video'
+            video = item_info.get('video', {})
+            play_url = video.get('playAddr') or video.get('downloadAddr')
+            if play_url:
+                return {
+                    'title': title,
+                    'play_url': play_url,
+                    'thumbnail_url': video.get('cover'),
+                    'duration': video.get('duration')
+                }
+        except Exception as e:
+            logger.warning(f"Error parsing TikTok rehydration data: {e}")
+
+    # 2. Search in SIGI_STATE
+    m2 = re.search(r'<script id="SIGI_STATE"[^>]*>(.*?)</script>', html)
+    if m2:
+        try:
+            data = json.loads(m2.group(1))
+            item_module = data.get('ItemModule', {})
+            for item_id, item in item_module.items():
+                video = item.get('video', {})
+                play_url = video.get('playAddr') or video.get('downloadAddr')
+                if play_url:
+                    return {
+                        'title': item.get('desc') or 'TikTok_Video',
+                        'play_url': play_url,
+                        'thumbnail_url': video.get('cover'),
+                        'duration': video.get('duration')
+                    }
+        except Exception as e:
+            logger.warning(f"Error parsing TikTok SIGI_STATE: {e}")
+
+    raise Exception("Could not find playable video link in TikTok page")
+
+@app.get("/api/video/tiktok")
+def stream_tiktok_video(url: str):
+    """
+    Proxies TikTok CDN video stream with required cookies and Range headers
+    so client devices can download MP4 reliably without 403 Forbidden.
+    """
+    raw_url = unquote_plus(url)
+    session = requests.Session()
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Referer': 'https://www.tiktok.com/'
+    }
+    # Warm up session on TikTok page to get valid session cookies
+    r_page = session.get(raw_url, headers=headers, allow_redirects=True, timeout=15)
+    html = r_page.text
+
+    play_url = None
+    m = re.search(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>', html)
+    if m:
+        try:
+            data = json.loads(m.group(1))
+            default_scope = data.get('__DEFAULT_SCOPE__', {})
+            item_info = default_scope.get('webapp.video-detail', {}).get('itemInfo', {}).get('itemStruct', {})
+            video = item_info.get('video', {})
+            play_url = video.get('playAddr') or video.get('downloadAddr')
+        except Exception:
+            pass
+
+    if not play_url:
+        m2 = re.search(r'<script id="SIGI_STATE"[^>]*>(.*?)</script>', html)
+        if m2:
+            try:
+                data = json.loads(m2.group(1))
+                item_module = data.get('ItemModule', {})
+                for item_id, item in item_module.items():
+                    video = item.get('video', {})
+                    play_url = video.get('playAddr') or video.get('downloadAddr')
+                    if play_url:
+                        break
+            except Exception:
+                pass
+
+    if not play_url:
+        raise HTTPException(status_code=404, detail="Video stream URL not found on TikTok page.")
+
+    stream_headers = {
+        'User-Agent': headers['User-Agent'],
+        'Referer': 'https://www.tiktok.com/',
+        'Range': 'bytes=0-'
+    }
+    upstream = session.get(play_url, headers=stream_headers, stream=True, timeout=25)
+    if upstream.status_code not in (200, 206):
+        raise HTTPException(status_code=upstream.status_code, detail="TikTok CDN rejected streaming request")
+
+    def iter_chunks():
+        for chunk in upstream.iter_content(chunk_size=64 * 1024):
+            if chunk:
+                yield chunk
+
+    resp_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": "video/mp4",
+    }
+    if "Content-Range" in upstream.headers:
+        parts = upstream.headers["Content-Range"].split("/")
+        if len(parts) == 2 and parts[1].isdigit():
+            resp_headers["Content-Length"] = parts[1]
+    elif "Content-Length" in upstream.headers:
+        resp_headers["Content-Length"] = upstream.headers["Content-Length"]
+
+    return StreamingResponse(iter_chunks(), media_type="video/mp4", headers=resp_headers)
+
 @app.post("/extract", response_model=ExtractResponse)
 def extract_media(req: ExtractRequest):
     raw_url = req.url.strip()
@@ -1036,6 +1164,23 @@ def extract_media(req: ExtractRequest):
             videoUrl=raw_url,
             srtContent="1\n00:00:01,000 --> 00:00:05,000\n[Direct Video - Enter dialogue to translate]\n\n"
         )
+
+    # 1. Native TikTok Extractor & Stream Proxy (fast, reliable, bypasses Cloudflare/anti-bot)
+    is_tiktok = any(d in raw_url.lower() for d in ["tiktok.com", "douyin.com", "vt.tiktok.com"])
+    if is_tiktok:
+        try:
+            tiktok_info = extract_tiktok_media(raw_url)
+            backend_base = os.environ.get("BACKEND_URL", "https://threesaj-studio-dub-app.onrender.com").rstrip("/")
+            stream_url = f"{backend_base}/api/video/tiktok?url={quote_plus(raw_url)}"
+            return ExtractResponse(
+                title=tiktok_info["title"],
+                videoUrl=stream_url,
+                thumbnailUrl=tiktok_info.get("thumbnail_url"),
+                durationSeconds=tiktok_info.get("duration"),
+                srtContent="1\n00:00:00,500 --> 00:00:05,000\n[TikTok Video - Enter dialogue to translate]\n\n"
+            )
+        except Exception as e:
+            logger.warning(f"Native TikTok extraction failed ({e}), falling back to yt-dlp...")
 
     ydl_opts = {
         "format": "best[ext=mp4]/best",

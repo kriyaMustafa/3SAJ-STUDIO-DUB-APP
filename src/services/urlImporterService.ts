@@ -65,7 +65,7 @@ export async function fetchMediaFromUrl(
   for (const endpoint of endpointsToTry) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 25000);
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
 
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -97,7 +97,11 @@ export async function fetchMediaFromUrl(
         throw new Error(`Extraction server error (${response.status}): ${errorText || response.statusText}`);
       }
     } catch (err: any) {
-      lastError = err;
+      if (err.name === 'AbortError' || err.message === 'Aborted') {
+        lastError = new Error('Extraction timed out. The server may still be waking up. Please try again in a few moments.');
+      } else {
+        lastError = err;
+      }
       console.warn(`Extraction attempt failed on ${endpoint}:`, err.message);
     }
   }
@@ -132,7 +136,12 @@ export async function downloadMediaAndSubtitles(
   const videoDownloadResumable = FileSystem.createDownloadResumable(
     extraction.videoUrl,
     videoDest,
-    {},
+    {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Referer': 'https://www.tiktok.com/',
+      },
+    },
     (downloadProgress) => {
       const { totalBytesWritten, totalBytesExpectedToWrite } = downloadProgress;
       if (totalBytesExpectedToWrite > 0) {
