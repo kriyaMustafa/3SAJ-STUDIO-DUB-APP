@@ -10,42 +10,37 @@ export interface TimeStretchResult {
 }
 
 /**
- * Builds chained atempo filters since a single atempo filter in FFmpeg only supports 0.5 to 2.0.
- * E.g., for ratio 2.4, returns "atempo=2.0,atempo=1.2".
- * Does NOT artificially clamp to low ratios: speeds up as much as needed to fit the exact segment duration without cutting off words.
+ * Builds atempo filter for FFmpeg.
+ * Clamps speedup to maxSpeed (default 2.0x max as per user specification "x2 (max x)")
+ * to preserve natural Khmer speech clarity and avoid unintelligible chipmunk artifacts.
  */
-export function buildAtempoFilter(targetRatio: number): string {
+export function buildAtempoFilter(targetRatio: number, maxSpeed: number = 2.0): string {
   let ratio = targetRatio;
   if (!isFinite(ratio) || ratio <= 1.0) return 'atempo=1.0';
-  // Allow speedup up to 12.0x so long sentences in tight slots are fully preserved
-  if (ratio > 12.0) ratio = 12.0;
+  // Strictly clamp to maxSpeed (2.0x max)
+  if (ratio > maxSpeed) ratio = maxSpeed;
 
-  const filters: string[] = [];
-  while (ratio > 2.0) {
-    filters.push('atempo=2.0');
-    ratio /= 2.0;
+  if (Math.abs(ratio - 1.0) < 0.02) {
+    return 'atempo=1.0';
   }
-  if (ratio > 1.001) {
-    filters.push(`atempo=${ratio.toFixed(4)}`);
-  }
-  return filters.length > 0 ? filters.join(',') : 'atempo=1.0';
+  return `atempo=${ratio.toFixed(4)}`;
 }
 
 /**
- * Strict Fit-to-Slot Time Stretch.
+ * Fit-to-Slot Time Stretch.
  * Speeds up TTS audio if its duration is longer than the subtitle's time slot (endTime - startTime).
- * Uses chained atempo filters so it fits the exact segment duration WITHOUT cutting off or truncating any words.
+ * Strictly caps speedup to 2.0x max so voice lines sound natural and are never cut off.
  */
 export async function fitAudioToSlot(
   audioPath: string,
   slotDurationMs: number,
-  _maxAtempo?: number
+  maxAtempo: number = 2.0
 ): Promise<TimeStretchResult> {
   const cleanPath = audioPath.replace(/^file:\/\//, '');
   const actualDurationMs = await getMediaDurationMs(cleanPath);
 
   // If slot duration is invalid or audio already fits within slot, no stretching needed
-  if (slotDurationMs <= 0 || actualDurationMs <= slotDurationMs) {
+  if (slotDurationMs <= 0 || actualDurationMs <= slotDurationMs + 30) {
     return {
       stretched: false,
       ratio: 1.0,
@@ -55,18 +50,17 @@ export async function fitAudioToSlot(
     };
   }
 
-  // Calculate speedup ratio needed to fit cleanly into slotDurationMs with 40ms buffer
-  // This guarantees that 100% of the speech line completes inside the subtitle slot
-  const targetRatio = Math.max(1.02, (actualDurationMs + 40) / slotDurationMs);
-  const atempoFilter = buildAtempoFilter(targetRatio);
+  // Calculate speedup ratio needed to fit cleanly into slotDurationMs, capped at maxAtempo (2.0x)
+  const targetRatio = Math.min(maxAtempo, Math.max(1.02, actualDurationMs / slotDurationMs));
+  const atempoFilter = buildAtempoFilter(targetRatio, maxAtempo);
   const isMp3 = cleanPath.toLowerCase().endsWith('.mp3');
   const tempOutputPath = isMp3
     ? cleanPath.replace(/\.mp3$/i, '_stretched.mp3')
     : cleanPath.replace(/\.wav$/i, '_stretched.wav');
 
-  // FFmpeg chained atempo command: accelerates speech naturally
+  // FFmpeg atempo command: accelerates speech naturally up to 2.0x max
   // CRITICAL: We NEVER use '-t' to cut or truncate speech!
-  // The chained atempo filter accelerates the entire voice line so zero words are dropped or cut off.
+  // The atempo filter accelerates the entire voice line so zero words are dropped or cut off.
   const codec = isMp3 ? '-c:a libmp3lame -b:a 128k' : '-c:a pcm_s16le';
   const command = `-y -i "${cleanPath}" -filter:a "${atempoFilter}" -ar 44100 -ac 1 ${codec} "${tempOutputPath}"`;
   const result = await runFFmpegCommand(command);

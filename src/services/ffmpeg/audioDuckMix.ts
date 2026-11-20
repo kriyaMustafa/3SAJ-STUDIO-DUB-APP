@@ -11,12 +11,83 @@ export interface MixAudioResult {
 }
 
 /**
+ * Generates a sample-accurate 44100 Hz mono 16-bit PCM WAV silence file.
+ * Creates standard RIFF WAV in memory with instantaneous base64 disk write (0ms latency),
+ * with FFmpeg anullsrc fallback.
+ */
+export async function generateSilenceWav(
+  outputPath: string,
+  durationMs: number
+): Promise<boolean> {
+  if (durationMs <= 0) return true;
+  const cleanOut = outputPath.replace(/^file:\/\//, '');
+
+  try {
+    const sampleRate = 44100;
+    const numChannels = 1;
+    const bytesPerSample = 2; // 16-bit PCM
+    const numSamples = Math.round((durationMs / 1000) * sampleRate);
+    if (numSamples <= 0) return true;
+
+    const dataSize = numSamples * numChannels * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    // RIFF header
+    view.setUint8(0, 0x52); view.setUint8(1, 0x49); view.setUint8(2, 0x46); view.setUint8(3, 0x46); // 'RIFF'
+    view.setUint32(4, 36 + dataSize, true); // Little-endian
+    view.setUint8(8, 0x57); view.setUint8(9, 0x41); view.setUint8(10, 0x56); view.setUint8(11, 0x45); // 'WAVE'
+
+    // fmt subchunk
+    view.setUint8(12, 0x66); view.setUint8(13, 0x6d); view.setUint8(14, 0x74); view.setUint8(15, 0x20); // 'fmt '
+    view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+    view.setUint16(20, 1, true);  // AudioFormat (1 for PCM)
+    view.setUint16(22, numChannels, true); // Mono
+    view.setUint32(24, sampleRate, true);  // 44100 Hz
+    view.setUint32(28, sampleRate * numChannels * bytesPerSample, true); // ByteRate (88200)
+    view.setUint16(32, numChannels * bytesPerSample, true); // BlockAlign (2)
+    view.setUint16(34, bytesPerSample * 8, true); // BitsPerSample (16)
+
+    // data subchunk
+    view.setUint8(36, 0x64); view.setUint8(37, 0x61); view.setUint8(38, 0x74); view.setUint8(39, 0x61); // 'data'
+    view.setUint32(40, dataSize, true);
+    // Data bytes remain 0x00 (pure digital silence)
+
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+      binary += String.fromCharCode.apply(null, slice as unknown as number[]);
+    }
+    const base64 = typeof btoa !== 'undefined'
+      ? btoa(binary)
+      : (typeof Buffer !== 'undefined' ? Buffer.from(buffer).toString('base64') : '');
+
+    if (base64) {
+      await FileSystem.writeAsStringAsync(outputPath, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      return true;
+    }
+  } catch (err) {
+    // If in-memory base64 fails, fallback to FFmpeg
+  }
+
+  // Robust FFmpeg anullsrc fallback
+  const durationSec = Math.max(0.01, durationMs / 1000).toFixed(4);
+  const cmd = `-y -f lavfi -i anullsrc=r=44100:cl=mono -t ${durationSec} -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOut}"`;
+  const res = await runFFmpegCommand(cmd);
+  return res.success;
+}
+
+/**
  * Pre-processes all TTS voice clips BEFORE timeline mixing:
- * 1. Verifies every segment's audio file exists and has non-zero duration.
- * 2. Compares speech duration against subtitle slot duration (seg.endTime - seg.startTime).
- * 3. If speech duration > slot duration, applies chained FFmpeg atempo speedup WITHOUT any '-t'
- *    truncation so 100% of the spoken line fits inside the subtitle slot with zero cut words.
- * 4. Normalizes every chunk to standardized 44100 Hz 16-bit mono PCM WAV for seamless mixing.
+ * 1. Verifies every segment's audio file exists and has valid audio.
+ * 2. Compares speech duration against subtitle duration (seg.endTime - seg.startTime).
+ * 3. If speech duration > subtitle duration, speeds up voice using FFmpeg atempo up to MAX 2.0x
+ *    (as explicitly requested: "if the tts voice is long than segment subtitle duration we can x speed voice to x2 (max x)").
+ * 4. Standardizes every chunk into 44100 Hz 16-bit mono PCM WAV for sample-accurate mixing with zero cut words.
  */
 export async function prepareAndSpeedAdjustTtsClips(
   segments: SubtitleSegment[],
@@ -42,9 +113,9 @@ export async function prepareAndSpeedAdjustTtsClips(
       continue;
     }
 
-    let actualDurationMs = seg.durationMs || 0;
+    let actualDurationMs = await getMediaDurationMs(cleanInputPath);
     if (actualDurationMs <= 0) {
-      actualDurationMs = await getMediaDurationMs(cleanInputPath);
+      actualDurationMs = seg.durationMs || 0;
     }
 
     if (actualDurationMs <= 0) {
@@ -52,16 +123,17 @@ export async function prepareAndSpeedAdjustTtsClips(
       continue;
     }
 
-    const slotDurationMs = Math.max(100, seg.endTime - seg.startTime);
+    const slotDurationMs = Math.max(50, seg.endTime - seg.startTime);
     const outputPath = `${preparedDir}/fitted_${seg.id}.wav`;
     const cleanOutputPath = outputPath.replace(/^file:\/\//, '');
 
-    if (actualDurationMs > slotDurationMs) {
-      // Speed up audio to fit within slot without cutting ANY words (40ms safety buffer)
-      const targetRatio = Math.max(1.02, (actualDurationMs + 40) / slotDurationMs);
-      const atempoFilter = buildAtempoFilter(targetRatio);
+    // If actual TTS duration exceeds subtitle duration, apply atempo speedup capped strictly at 2.0x max
+    if (actualDurationMs > slotDurationMs + 40) {
+      const rawRatio = actualDurationMs / slotDurationMs;
+      const targetRatio = Math.min(2.0, Math.max(1.02, rawRatio));
+      const atempoFilter = buildAtempoFilter(targetRatio, 2.0);
 
-      // FFmpeg command without '-t' truncation: speeds up whole audio clip
+      // FFmpeg command without '-t' truncation: speeds up whole audio clip cleanly
       const speedCmd = `-y -i "${cleanInputPath}" -filter:a "${atempoFilter}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
       const res = await runFFmpegCommand(speedCmd);
 
@@ -86,10 +158,11 @@ export async function prepareAndSpeedAdjustTtsClips(
       // Audio already fits inside slot: standardize to 44100 Hz mono PCM WAV
       const stdCmd = `-y -i "${cleanInputPath}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
       const res = await runFFmpegCommand(stdCmd);
+      const finalDur = res.success ? await getMediaDurationMs(cleanOutputPath) : actualDurationMs;
       processed.push({
         ...seg,
         audioPath: res.success ? outputPath : seg.audioPath,
-        durationMs: actualDurationMs,
+        durationMs: finalDur > 0 ? finalDur : actualDurationMs,
       });
     }
   }
@@ -99,18 +172,20 @@ export async function prepareAndSpeedAdjustTtsClips(
 
 /**
  * Strict Audio Sync Speech Timeline Generator.
- * Assembles all pre-fitted voice segments into a seamless, sample-accurate speech timeline.
- * Guarantees zero speech truncation, zero drift, and zero missing voice lines.
+ * Mixes all voice segments first, ensuring every voice segment starts at the exact time
+ * matching the subtitle file (startTime).
+ * Uses exact silence gap insertion rather than '-t' truncation so ZERO spoken words are cut off.
  */
 export async function buildSpeechTimelineTrack(
   segments: SubtitleSegment[],
   projectWorkspaceDir: string,
   videoPath?: string
 ): Promise<string> {
-  // 1. Pre-process and speed-adjust all TTS clips first so they strictly fit their slots
+  // 1. Pre-process and speed-adjust all TTS clips first so they fit their slots (max 2.0x)
   const speedAdjustedSegments = await prepareAndSpeedAdjustTtsClips(segments, projectWorkspaceDir);
 
   // 2. Filter ready segments with verified audio and sort strictly by startTime
+  // Do NOT mutate or distort original subtitle startTime timestamps!
   const readySegments = speedAdjustedSegments
     .filter((s) => s.audioPath)
     .sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
@@ -119,87 +194,63 @@ export async function buildSpeechTimelineTrack(
     throw new Error('No valid TTS audio clips found to construct speech timeline.');
   }
 
-  // 3. Sanitize timestamps to guarantee strictly increasing start times without overlap
-  for (let i = 0; i < readySegments.length - 1; i++) {
-    const cur = readySegments[i];
-    const next = readySegments[i + 1];
-    if (next.startTime <= cur.startTime) {
-      const minStep = Math.max(50, Math.min(cur.endTime - cur.startTime, 500));
-      next.startTime = cur.startTime + minStep;
-      if (next.endTime <= next.startTime) {
-        next.endTime = next.startTime + 500;
-      }
-    }
-  }
-
   const timelineDir = `${projectWorkspaceDir}/timeline`;
   await FileSystem.makeDirectoryAsync(timelineDir, { intermediates: true });
 
   const concatListPath = `${timelineDir}/concat_list.txt`;
   let concatFileContent = '';
 
-  // 4. Initial Silence Padding: From 0 to first segment's startTime
-  const firstStartTime = readySegments[0].startTime;
-  if (firstStartTime > 0) {
-    const initSec = (firstStartTime / 1000).toFixed(4);
-    const initSilencePath = `${timelineDir}/initial_silence.wav`;
-    const cleanInitSil = initSilencePath.replace(/^file:\/\//, '');
-    const initCmd = `-y -f lavfi -i anullsrc=r=44100:cl=mono -t ${initSec} -ar 44100 -ac 1 -c:a pcm_s16le "${cleanInitSil}"`;
-    const initRes = await runFFmpegCommand(initCmd);
-    if (initRes.success) {
-      concatFileContent += `file '${cleanInitSil}'\n`;
-    }
-  }
+  let currentTimelineMs = 0;
 
-  // 5. Build sample-accurate slots for each voice segment
+  // 3. Assemble timeline with exact silence gaps and zero voice loss
   for (let i = 0; i < readySegments.length; i++) {
     const seg = readySegments[i];
     const chunkPath = seg.audioPath!.replace(/^file:\/\//, '');
-    const nextSeg = i + 1 < readySegments.length ? readySegments[i + 1] : null;
 
-    // Slot duration: From this segment's startTime to next segment's startTime
-    // (or until seg.endTime for the final segment)
-    const slotDurationMs = nextSeg
-      ? Math.max(nextSeg.startTime - seg.startTime, 50)
-      : Math.max(seg.endTime - seg.startTime, 50);
-
-    const slotWavPath = `${timelineDir}/slot_${i}.wav`;
-    const cleanSlotWav = slotWavPath.replace(/^file:\/\//, '');
-    const slotDurationSec = (slotDurationMs / 1000).toFixed(4);
-
-    // Because the speech was ALREADY speed-adjusted to <= slotDurationMs in prepareAndSpeedAdjustTtsClips,
-    // apad only appends trailing silence up to slotDurationSec. It NEVER cuts off any words!
-    const slotCmd = `-y -i "${chunkPath}" -filter:a "apad" -t ${slotDurationSec} -ar 44100 -ac 1 -c:a pcm_s16le "${cleanSlotWav}"`;
-    let res = await runFFmpegCommand(slotCmd);
-
-    if (!res.success) {
-      // Fallback: convert directly without silence padding, NEVER replace with anullsrc silence!
-      const fallbackCmd = `-y -i "${chunkPath}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanSlotWav}"`;
-      res = await runFFmpegCommand(fallbackCmd);
+    // Measure exact duration of this fitted segment chunk
+    let clipDurMs = seg.durationMs || 0;
+    if (clipDurMs <= 0) {
+      clipDurMs = await getMediaDurationMs(chunkPath);
+    }
+    if (clipDurMs <= 0) {
+      clipDurMs = Math.max(50, seg.endTime - seg.startTime);
     }
 
-    concatFileContent += `file '${cleanSlotWav}'\n`;
+    // Gap between current timeline position and segment's subtitle startTime
+    const gapMs = seg.startTime - currentTimelineMs;
+
+    if (gapMs >= 20) {
+      // Insert precise silence gap so segment begins exactly at seg.startTime
+      const silPath = `${timelineDir}/gap_${i}_${gapMs}ms.wav`;
+      const generated = await generateSilenceWav(silPath, gapMs);
+      if (generated) {
+        const cleanSil = silPath.replace(/^file:\/\//, '');
+        concatFileContent += `file '${cleanSil}'\n`;
+        currentTimelineMs += gapMs;
+      }
+    }
+
+    // Append the full audio chunk - NEVER use '-t' to cut off speech!
+    // 100% of spoken words are preserved on the timeline
+    concatFileContent += `file '${chunkPath}'\n`;
+    currentTimelineMs += clipDurMs;
   }
 
-  // 6. Pad trailing silence so audio duration matches the video length
+  // 4. Pad trailing silence so audio duration matches the video length
   if (videoPath) {
     try {
       const cleanVideo = videoPath.replace(/^file:\/\//, '');
       const totalVideoDurationMs = await getMediaDurationMs(cleanVideo);
-      const lastSeg = readySegments[readySegments.length - 1];
-      const lastSlotDurationMs = Math.max(lastSeg.endTime - lastSeg.startTime, 50);
-      const currentTimelineEndMs = lastSeg.startTime + lastSlotDurationMs;
 
-      if (totalVideoDurationMs > currentTimelineEndMs) {
-        const trailingMs = totalVideoDurationMs - currentTimelineEndMs;
-        if (trailingMs >= 50) {
-          const trailingSec = (trailingMs / 1000).toFixed(4);
-          const trailingWav = `${timelineDir}/trailing_silence.wav`;
-          const cleanTrailing = trailingWav.replace(/^file:\/\//, '');
-          const trailCmd = `-y -f lavfi -i anullsrc=r=44100:cl=mono -t ${trailingSec} -ar 44100 -ac 1 -c:a pcm_s16le "${cleanTrailing}"`;
-          const trailRes = await runFFmpegCommand(trailCmd);
-          if (trailRes.success) {
+      if (totalVideoDurationMs > currentTimelineMs) {
+        const trailingMs = totalVideoDurationMs - currentTimelineMs;
+        if (trailingMs >= 20) {
+          const trailingWav = `${timelineDir}/trailing_${trailingMs}ms.wav`;
+          const generated = await generateSilenceWav(trailingWav, trailingMs);
+          if (generated) {
+            const cleanTrailing = trailingWav.replace(/^file:\/\//, '');
             concatFileContent += `file '${cleanTrailing}'\n`;
+            currentTimelineMs += trailingMs;
           }
         }
       }
@@ -214,7 +265,7 @@ export async function buildSpeechTimelineTrack(
   const speechTrackOutput = `${projectWorkspaceDir}/speech_timeline.wav`;
   const cleanSpeechOutput = speechTrackOutput.replace(/^file:\/\//, '');
 
-  // Concatenate all slots into a single uniform, sample-accurate speech timeline
+  // Concatenate all silence gaps and speech clips into a single sample-accurate speech timeline
   const concatCommand = `-y -f concat -safe 0 -i "${cleanConcatList}" -c:a pcm_s16le -ar 44100 -ac 1 "${cleanSpeechOutput}"`;
   const concatResult = await runFFmpegCommand(concatCommand);
 

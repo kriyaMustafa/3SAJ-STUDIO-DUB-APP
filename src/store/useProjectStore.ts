@@ -702,6 +702,35 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         }
       }
 
+      // Check for any segments that have text but are missing audio or not marked ready
+      const missingAudio = exportSegments.filter(
+        (s) =>
+          ((s.translatedText && s.translatedText.trim()) || (s.originalText && s.originalText.trim())) &&
+          (!s.audioPath || s.status !== 'ready')
+      );
+
+      // If some segments are missing audio, auto-synthesize them first so zero lines are lost!
+      if (missingAudio.length > 0) {
+        set({
+          progress: {
+            completed: exportSegments.length - missingAudio.length,
+            total: exportSegments.length,
+            currentId: missingAudio[0].id,
+            statusText: `Synthesizing ${missingAudio.length} missing audio lines before export...`,
+          },
+        });
+
+        const { updatedSegments } = await runTtsPipeline(
+          activeProject.id,
+          exportSegments,
+          activeProject.workspaceDir,
+          settings,
+          (progress) => set({ progress })
+        );
+        exportSegments = updatedSegments;
+        set({ segments: updatedSegments });
+      }
+
       const hasAudio = exportSegments.some((s) => s.audioPath || s.status === 'ready');
       if (!hasAudio) {
         set({ isExporting: false });
