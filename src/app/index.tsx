@@ -92,11 +92,12 @@ export default function ProjectDashboardScreen() {
         authService.setBackendUrl(settings.backendApiUrl);
       }
       const token = await authService.getAccessToken();
+      let profile: any = null;
       if (!token) {
         setCurrentUser(null);
         setCurrentSub(null);
       } else {
-        const profile = await authService.getCurrentProfile();
+        profile = await authService.getCurrentProfile();
         if (profile) {
           setCurrentUser(profile.user);
           setCurrentSub(profile.subscription);
@@ -105,15 +106,22 @@ export default function ProjectDashboardScreen() {
           setCurrentSub(null);
         }
       }
+      const lic = await checkAppLicense(profile);
+      setLicenseInfo(lic);
     } catch (_) {
       setCurrentUser(null);
       setCurrentSub(null);
+      const lic = await checkAppLicense();
+      setLicenseInfo(lic);
     }
-    const lic = await checkAppLicense();
-    setLicenseInfo(lic);
   };
 
   React.useEffect(() => {
+    // Instant cache read for zero-latency screen render
+    authService.getStoredUserProfile().then((cached) => {
+      if (cached) setCurrentUser(cached);
+    });
+
     refreshLicense();
     centralPaymentClient.prewarm().catch(() => {});
     // Real-time auth listener: updates dashboard immediately on sign-in or sign-out!

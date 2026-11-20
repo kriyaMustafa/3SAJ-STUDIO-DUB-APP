@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Video, ResizeMode, AVPlaybackStatus, Audio } from 'expo-av';
 import { Play, Pause, SkipBack, SkipForward, Mic, Volume2, VolumeX } from 'lucide-react-native';
@@ -33,6 +33,13 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
   const currentSoundRef = useRef<Audio.Sound | null>(null);
   const lastPlayedIdRef = useRef<number | null>(null);
   const isAudioLoadingRef = useRef<boolean>(false);
+  const isUnmountedRef = useRef<boolean>(false);
+  const syncMutexRef = useRef<boolean>(false);
+
+  // Memoize sorted segments so we never re-sort on every player tick
+  const sortedSegments = useMemo(() => {
+    return [...segments].sort((a, b) => a.startTime - b.startTime);
+  }, [segments]);
 
   // Initialize Audio mode for Android & iOS speaker output
   useEffect(() => {
@@ -46,29 +53,39 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
   }, []);
 
   const stopDubbedAudio = async () => {
+    lastPlayedIdRef.current = null;
     if (currentSoundRef.current) {
       const sound = currentSoundRef.current;
       currentSoundRef.current = null;
       try {
         await sound.stopAsync();
+      } catch (_) {}
+      try {
         await sound.unloadAsync();
       } catch (_) {}
     }
-    lastPlayedIdRef.current = null;
   };
 
   useEffect(() => {
+    isUnmountedRef.current = false;
     return () => {
-      stopDubbedAudio();
+      isUnmountedRef.current = true;
+      if (videoRef.current) {
+        try {
+          videoRef.current.pauseAsync().catch(() => {});
+          videoRef.current.unloadAsync().catch(() => {});
+        } catch (_) {}
+      }
+      stopDubbedAudio().catch(() => {});
     };
   }, []);
 
   // Respond to seek commands from external interactions (e.g. segment card taps)
   useEffect(() => {
     if (seekToTimeMs !== null && seekToTimeMs !== undefined && videoRef.current) {
-      videoRef.current.setPositionAsync(seekToTimeMs);
+      videoRef.current.setPositionAsync(seekToTimeMs).catch(() => {});
       setCurrentTimeMs(seekToTimeMs);
-      syncDubbedAudio(seekToTimeMs, isPlaying);
+      syncDubbedAudio(seekToTimeMs, isPlaying).catch(() => {});
     }
   }, [seekToTimeMs]);
 
@@ -84,14 +101,14 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
   const togglePlayPause = async () => {
     if (!videoRef.current) return;
     if (isPlaying) {
-      await videoRef.current.pauseAsync();
+      await videoRef.current.pauseAsync().catch(() => {});
       if (currentSoundRef.current) {
         try {
           await currentSoundRef.current.pauseAsync();
         } catch (_) {}
       }
     } else {
-      await videoRef.current.playAsync();
+      await videoRef.current.playAsync().catch(() => {});
       if (currentSoundRef.current && audioMode === 'DUBBED') {
         try {
           await currentSoundRef.current.playAsync();
@@ -101,109 +118,119 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
   };
 
   /**
-   * Precise Audio Synchronization Engine.
-   * Matches the speech timeline behavior of final video export:
-   * - Segments begin speaking at their exact startTime.
-   * - Voice plays for its full duration without being prematurely cut off.
-   * - Resumes cleanly on play/pause and resyncs if drift exceeds 150ms.
+   * Thread-safe Audio Synchronization Engine.
+   * Matches the speech timeline behavior of final video export with mutex lock
+   * to eliminate concurrent native ExoPlayer creation/unloading crashes.
    */
   const syncDubbedAudio = async (pos: number, isVideoPlaying: boolean) => {
-    if (audioMode !== 'DUBBED') {
-      if (currentSoundRef.current) {
-        await stopDubbedAudio();
-      }
-      return;
-    }
+    if (isUnmountedRef.current || syncMutexRef.current) return;
+    syncMutexRef.current = true;
 
-    if (!isVideoPlaying) {
-      if (currentSoundRef.current) {
-        try {
-          const st = await currentSoundRef.current.getStatusAsync();
-          if (st.isLoaded && st.isPlaying) {
-            await currentSoundRef.current.pauseAsync();
-          }
-        } catch (_) {}
-      }
-      return;
-    }
-
-    // Sort segments by startTime
-    const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
-
-    // Find segment whose speech slot covers current position
-    const curSeg = sorted.find((s, idx) => {
-      const nextSeg = sorted[idx + 1];
-      const speechDuration = s.durationMs && s.durationMs > 0 ? s.durationMs : Math.max(50, s.endTime - s.startTime);
-      const maxSpeechEnd = nextSeg ? Math.min(s.startTime + speechDuration, nextSeg.startTime) : (s.startTime + speechDuration);
-      return pos >= s.startTime && pos < maxSpeechEnd;
-    });
-
-    if (curSeg && curSeg.audioPath) {
-      const offsetInSegment = Math.max(0, pos - curSeg.startTime);
-
-      // Same segment audio is already loaded
-      if (lastPlayedIdRef.current === curSeg.id && currentSoundRef.current) {
-        try {
-          const st = await currentSoundRef.current.getStatusAsync();
-          if (st.isLoaded) {
-            if (!st.isPlaying) {
-              await currentSoundRef.current.setPositionAsync(offsetInSegment);
-              await currentSoundRef.current.playAsync();
-            } else {
-              // Drift detection and sample-accurate correction
-              const drift = Math.abs(st.positionMillis - offsetInSegment);
-              if (drift > 150) {
-                await currentSoundRef.current.setPositionAsync(offsetInSegment);
-              }
-            }
-          }
-        } catch (_) {}
+    try {
+      if (audioMode !== 'DUBBED') {
+        if (currentSoundRef.current) {
+          await stopDubbedAudio();
+        }
         return;
       }
 
-      // New segment transition
-      if (isAudioLoadingRef.current) return;
-      isAudioLoadingRef.current = true;
+      if (!isVideoPlaying) {
+        if (currentSoundRef.current) {
+          try {
+            const st = await currentSoundRef.current.getStatusAsync();
+            if (st.isLoaded && st.isPlaying) {
+              await currentSoundRef.current.pauseAsync();
+            }
+          } catch (_) {}
+        }
+        return;
+      }
 
-      try {
-        await stopDubbedAudio();
-        lastPlayedIdRef.current = curSeg.id;
+      // Find segment whose speech slot covers current position using pre-sorted memoized segments
+      const curSeg = sortedSegments.find((s, idx) => {
+        const nextSeg = sortedSegments[idx + 1];
+        const speechDuration = s.durationMs && s.durationMs > 0 ? s.durationMs : Math.max(50, s.endTime - s.startTime);
+        const maxSpeechEnd = nextSeg ? Math.min(s.startTime + speechDuration, nextSeg.startTime) : (s.startTime + speechDuration);
+        return pos >= s.startTime && pos < maxSpeechEnd;
+      });
 
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: curSeg.audioPath },
-          { shouldPlay: true, positionMillis: offsetInSegment, volume: 1.0 }
-        );
-        currentSoundRef.current = sound;
+      if (curSeg && curSeg.audioPath) {
+        const offsetInSegment = Math.max(0, pos - curSeg.startTime);
 
-        sound.setOnPlaybackStatusUpdate((st) => {
-          if (st.isLoaded && st.didJustFinish) {
-            lastPlayedIdRef.current = null;
+        // Same segment audio is already loaded
+        if (lastPlayedIdRef.current === curSeg.id && currentSoundRef.current) {
+          try {
+            const st = await currentSoundRef.current.getStatusAsync();
+            if (st.isLoaded) {
+              if (!st.isPlaying) {
+                await currentSoundRef.current.setPositionAsync(offsetInSegment);
+                await currentSoundRef.current.playAsync();
+              } else {
+                const drift = Math.abs(st.positionMillis - offsetInSegment);
+                if (drift > 200) {
+                  await currentSoundRef.current.setPositionAsync(offsetInSegment);
+                }
+              }
+            }
+          } catch (_) {}
+          return;
+        }
+
+        // New segment transition: serialize audio instantiation safely
+        if (isAudioLoadingRef.current) return;
+        isAudioLoadingRef.current = true;
+
+        try {
+          await stopDubbedAudio();
+          if (isUnmountedRef.current) return;
+
+          lastPlayedIdRef.current = curSeg.id;
+
+          const { sound } = await Audio.Sound.createAsync(
+            { uri: curSeg.audioPath },
+            { shouldPlay: true, positionMillis: offsetInSegment, volume: 1.0 }
+          );
+
+          if (isUnmountedRef.current) {
+            sound.unloadAsync().catch(() => {});
+            return;
           }
-        });
-      } catch (audioErr) {
-        console.warn('[PreviewAudio] Error playing dubbed segment:', audioErr);
-      } finally {
-        isAudioLoadingRef.current = false;
+
+          currentSoundRef.current = sound;
+
+          sound.setOnPlaybackStatusUpdate((st) => {
+            if (st.isLoaded && st.didJustFinish) {
+              lastPlayedIdRef.current = null;
+            }
+          });
+        } catch (audioErr) {
+          console.warn('[PreviewAudio] Error playing dubbed segment:', audioErr);
+        } finally {
+          isAudioLoadingRef.current = false;
+        }
+      } else {
+        // Silence gap between subtitles
+        if (lastPlayedIdRef.current !== null) {
+          await stopDubbedAudio();
+        }
       }
-    } else {
-      // Not in any active speech segment (silence gap between subtitles)
-      if (lastPlayedIdRef.current !== null) {
-        await stopDubbedAudio();
-      }
+    } finally {
+      syncMutexRef.current = false;
     }
   };
 
-  const handleStatusUpdate = async (status: AVPlaybackStatus) => {
-    if (!status.isLoaded) return;
+  const handleStatusUpdate = (status: AVPlaybackStatus) => {
+    if (!status.isLoaded || isUnmountedRef.current) return;
 
-    setIsPlaying(status.isPlaying);
+    const isPl = status.isPlaying;
     const pos = status.positionMillis || 0;
+    setIsPlaying(isPl);
     setCurrentTimeMs(pos);
     setDurationMs(status.durationMillis || 0);
 
     onPlaybackStatusUpdate(status);
 
-    await syncDubbedAudio(pos, status.isPlaying);
+    syncDubbedAudio(pos, isPl).catch(() => {});
   };
 
   const formatTime = (ms: number) => {
@@ -224,8 +251,9 @@ export const InteractivePreviewPlayer: React.FC<InteractivePreviewPlayerProps> =
           resizeMode={ResizeMode.CONTAIN}
           useNativeControls={false}
           isMuted={audioMode === 'DUBBED' || audioMode === 'MUTED'}
-          progressUpdateIntervalMillis={50}
+          progressUpdateIntervalMillis={200}
           onPlaybackStatusUpdate={handleStatusUpdate}
+          onError={(err) => console.warn('[VideoPreview] Playback error:', err)}
         />
 
         {/* Audio Mode Badge in Top-Right Corner */}

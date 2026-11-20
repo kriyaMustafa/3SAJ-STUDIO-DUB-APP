@@ -259,12 +259,13 @@ export default function EditorScreen() {
       {/* Subtitle Segments List */}
       <FlatList
         data={segments}
-        extraData={segments}
+        extraData={activeSegment?.id}
         keyExtractor={(item) => String(item.id)}
         contentContainerStyle={styles.listContent}
-        initialNumToRender={15}
-        maxToRenderPerBatch={20}
-        windowSize={11}
+        initialNumToRender={8}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        removeClippedSubviews={true}
         renderItem={({ item }) => (
           <SegmentCard
             segment={item}

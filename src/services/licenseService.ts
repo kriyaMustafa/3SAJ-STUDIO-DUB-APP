@@ -153,10 +153,10 @@ export async function getSavedLicense(): Promise<LicenseData | null> {
  * Authoritatively queries server-side PostgreSQL first via authService,
  * then falls back to local SecureStore.
  */
-export async function checkAppLicense(): Promise<LicenseStatus> {
+export async function checkAppLicense(passedProfile?: any): Promise<LicenseStatus> {
   // 1. Check server-side subscription
   try {
-    const profile = await authService.getCurrentProfile();
+    const profile = passedProfile !== undefined ? passedProfile : await authService.getCurrentProfile();
     if (profile && profile.subscription) {
       const sub = profile.subscription;
       const tier = (sub.plan_code in TIER_CONFIGS ? sub.plan_code : 'PRO') as LicenseTier;

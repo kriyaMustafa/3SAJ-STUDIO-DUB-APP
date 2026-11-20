@@ -138,6 +138,7 @@ export default function SettingsScreen() {
   };
 
   const refreshProfileAndSubscription = async () => {
+    let profileData: any = null;
     try {
       if (settings.backendApiUrl) {
         authService.setBackendUrl(settings.backendApiUrl);
@@ -147,7 +148,7 @@ export default function SettingsScreen() {
         setCurrentUser(null);
         setCurrentSub(null);
       } else {
-        const profileData = await authService.getCurrentProfile();
+        profileData = await authService.getCurrentProfile();
         if (profileData) {
           setCurrentUser(profileData.user);
           setCurrentSub(profileData.subscription);
@@ -162,7 +163,7 @@ export default function SettingsScreen() {
       setCurrentSub(null);
     }
 
-    const status = await checkAppLicense();
+    const status = await checkAppLicense(profileData);
     setLicenseStatus(status);
     if (status.license) {
       const usage = await getDailyUsage(status.license.dailyLimitSeconds);
@@ -173,6 +174,11 @@ export default function SettingsScreen() {
   };
 
   useEffect(() => {
+    // Instant cached profile display (0ms load latency)
+    authService.getStoredUserProfile().then((cached) => {
+      if (cached) setCurrentUser(cached);
+    });
+
     refreshProfileAndSubscription();
     // Subscribe to auth state changes so UI updates immediately when signing in or signing out
     const unsub = authService.onAuthStateChanged((user, sub) => {

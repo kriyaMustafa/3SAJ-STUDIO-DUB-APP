@@ -20,7 +20,7 @@ interface SegmentCardProps {
   onSeekToSegment?: (startTimeMs: number) => void;
 }
 
-export const SegmentCard: React.FC<SegmentCardProps> = ({
+const SegmentCardComponent: React.FC<SegmentCardProps> = ({
   segment,
   isActive,
   isPlayingAudio,
@@ -295,4 +295,19 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 4,
   },
+});
+
+export const SegmentCard = React.memo(SegmentCardComponent, (prev, next) => {
+  return (
+    prev.isActive === next.isActive &&
+    prev.isPlayingAudio === next.isPlayingAudio &&
+    prev.segment.id === next.segment.id &&
+    prev.segment.translatedText === next.segment.translatedText &&
+    prev.segment.originalText === next.segment.originalText &&
+    prev.segment.gender === next.segment.gender &&
+    prev.segment.ageTone === next.segment.ageTone &&
+    prev.segment.status === next.segment.status &&
+    prev.segment.audioPath === next.segment.audioPath &&
+    prev.segment.errorMessage === next.segment.errorMessage
+  );
 });

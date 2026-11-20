@@ -65,6 +65,12 @@ export const DEFAULT_BACKEND_URL = 'https://threesaj-studio-dub-app.onrender.com
 export class AuthService {
   private backendBaseUrl: string;
   private authListeners: Array<(user: UserProfile | null, sub: SubscriptionInfo | null) => void> = [];
+  private cachedProfileData: {
+    user: UserProfile;
+    subscription: SubscriptionInfo | null;
+    usage_today: DailyUsageInfo;
+    cachedAt: number;
+  } | null = null;
 
   constructor(backendBaseUrl: string = DEFAULT_BACKEND_URL) {
     this.backendBaseUrl = backendBaseUrl.replace(/\/$/, '');
@@ -274,6 +280,7 @@ export class AuthService {
   }
 
   async clearTokens(): Promise<void> {
+    this.cachedProfileData = null;
     try {
       await Promise.all([
         SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY).catch(() => {}),
@@ -465,15 +472,20 @@ export class AuthService {
 
   /**
    * Fetch current user profile, subscription, and usage info.
+   * Features in-memory caching (15s) and 6s network timeout for zero UI lag.
    */
-  async getCurrentProfile(): Promise<{
+  async getCurrentProfile(forceRefresh: boolean = false): Promise<{
     user: UserProfile;
     subscription: SubscriptionInfo | null;
     usage_today: DailyUsageInfo;
   } | null> {
+    const now = Date.now();
+    if (!forceRefresh && this.cachedProfileData && now - this.cachedProfileData.cachedAt < 15000) {
+      return this.cachedProfileData;
+    }
+
     let token = await this.getValidAccessToken();
     if (!token) {
-      // If offline or token missing, try loading locally cached profile
       const stored = await this.getStoredUserProfile();
       if (stored) {
         return {
@@ -494,17 +506,26 @@ export class AuthService {
     }
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+
       let response = await fetch(`${this.backendBaseUrl}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       // If token expired on server, attempt refresh
       if (response.status === 401) {
         const refreshedToken = await this.refreshTokens();
         if (refreshedToken) {
+          const retryController = new AbortController();
+          const retryTimeoutId = setTimeout(() => retryController.abort(), 6000);
           response = await fetch(`${this.backendBaseUrl}/api/auth/me`, {
             headers: { Authorization: `Bearer ${refreshedToken}` },
+            signal: retryController.signal,
           });
+          clearTimeout(retryTimeoutId);
         }
       }
 
@@ -514,12 +535,19 @@ export class AuthService {
           const uid = data.user.id || (data.user as any).user_id;
           data.user.id = uid;
           data.user.user_id = uid;
+          this.cachedProfileData = {
+            ...data,
+            cachedAt: Date.now(),
+          };
           await this.storeUserProfile(data.user, data.subscription);
         }
         return data;
       }
-      return null;
+      return this.cachedProfileData || null;
     } catch {
+      if (this.cachedProfileData) {
+        return this.cachedProfileData;
+      }
       const stored = await this.getStoredUserProfile();
       if (stored) {
         return {
