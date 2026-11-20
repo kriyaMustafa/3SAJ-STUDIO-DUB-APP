@@ -702,12 +702,37 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         }
       }
 
-      // Check for any segments that have text but are missing audio or not marked ready
-      const missingAudio = exportSegments.filter(
-        (s) =>
-          ((s.translatedText && s.translatedText.trim()) || (s.originalText && s.originalText.trim())) &&
-          (!s.audioPath || s.status !== 'ready')
-      );
+      // Verify which segments have physical audio files present on disk
+      // If the app was updated or reinstalled, old cached audio files might be gone.
+      // In that case, auto-synthesize them so 100% of dialogue lines are exported!
+      const missingAudio: SubtitleSegment[] = [];
+      for (const seg of exportSegments) {
+        const hasText =
+          (seg.translatedText && seg.translatedText.trim()) ||
+          (seg.originalText && seg.originalText.trim());
+        if (!hasText) continue;
+
+        let fileExists = false;
+        if (seg.audioPath) {
+          const uri = seg.audioPath.startsWith('file://') ? seg.audioPath : `file://${seg.audioPath}`;
+          const info = await FileSystem.getInfoAsync(uri).catch(() => ({ exists: false }));
+          if (info.exists) {
+            fileExists = true;
+          } else {
+            const fbChunk = `${activeProject.workspaceDir}/tts_chunks/chunk_${seg.id}.mp3`;
+            const fbUri = fbChunk.startsWith('file://') ? fbChunk : `file://${fbChunk}`;
+            const fbInfo = await FileSystem.getInfoAsync(fbUri).catch(() => ({ exists: false }));
+            if (fbInfo.exists) {
+              fileExists = true;
+              seg.audioPath = fbChunk;
+            }
+          }
+        }
+
+        if (!fileExists || seg.status !== 'ready') {
+          missingAudio.push(seg);
+        }
+      }
 
       // If some segments are missing audio, auto-synthesize them first so zero lines are lost!
       if (missingAudio.length > 0) {

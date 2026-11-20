@@ -105,22 +105,28 @@ export async function prepareAndSpeedAdjustTtsClips(
     }
 
     const cleanInputPath = seg.audioPath.replace(/^file:\/\//, '');
+    const uri = seg.audioPath.startsWith('file://') ? seg.audioPath : `file://${seg.audioPath}`;
 
-    // Check if file exists
-    const fileInfo = await FileSystem.getInfoAsync(seg.audioPath).catch(() => ({ exists: false }));
+    // Resilient file existence check: check primary URI and project workspace fallback
+    let sourcePath = cleanInputPath;
+
+    const fileInfo = await FileSystem.getInfoAsync(uri).catch(() => ({ exists: false }));
     if (!fileInfo.exists) {
-      console.warn(`[AudioDuckMix] Audio file for segment #${seg.id} not found at ${seg.audioPath}, skipping.`);
-      continue;
+      // Check fallback location in project workspace
+      const fallbackChunk = `${projectWorkspaceDir}/tts_chunks/chunk_${seg.id}.mp3`;
+      const fallbackUri = fallbackChunk.startsWith('file://') ? fallbackChunk : `file://${fallbackChunk}`;
+      const fbInfo = await FileSystem.getInfoAsync(fallbackUri).catch(() => ({ exists: false }));
+      if (fbInfo.exists) {
+        sourcePath = fallbackChunk.replace(/^file:\/\//, '');
+      }
     }
 
-    let actualDurationMs = await getMediaDurationMs(cleanInputPath);
+    let actualDurationMs = seg.durationMs || 0;
     if (actualDurationMs <= 0) {
-      actualDurationMs = seg.durationMs || 0;
+      actualDurationMs = await getMediaDurationMs(sourcePath);
     }
-
     if (actualDurationMs <= 0) {
-      console.warn(`[AudioDuckMix] Audio file for segment #${seg.id} has 0 duration, skipping.`);
-      continue;
+      actualDurationMs = Math.max(500, seg.endTime - seg.startTime);
     }
 
     const slotDurationMs = Math.max(50, seg.endTime - seg.startTime);
@@ -134,7 +140,7 @@ export async function prepareAndSpeedAdjustTtsClips(
       const atempoFilter = buildAtempoFilter(targetRatio, 2.0);
 
       // FFmpeg command without '-t' truncation: speeds up whole audio clip cleanly
-      const speedCmd = `-y -i "${cleanInputPath}" -filter:a "${atempoFilter}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
+      const speedCmd = `-y -i "${sourcePath}" -filter:a "${atempoFilter}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
       const res = await runFFmpegCommand(speedCmd);
 
       if (res.success) {
@@ -146,22 +152,22 @@ export async function prepareAndSpeedAdjustTtsClips(
         });
       } else {
         // Fallback: convert directly without atempo failure
-        const fallbackCmd = `-y -i "${cleanInputPath}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
-        await runFFmpegCommand(fallbackCmd);
+        const fallbackCmd = `-y -i "${sourcePath}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
+        const fbRes = await runFFmpegCommand(fallbackCmd);
         processed.push({
           ...seg,
-          audioPath: outputPath,
+          audioPath: fbRes.success ? outputPath : sourcePath,
           durationMs: actualDurationMs,
         });
       }
     } else {
       // Audio already fits inside slot: standardize to 44100 Hz mono PCM WAV
-      const stdCmd = `-y -i "${cleanInputPath}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
+      const stdCmd = `-y -i "${sourcePath}" -ar 44100 -ac 1 -c:a pcm_s16le "${cleanOutputPath}"`;
       const res = await runFFmpegCommand(stdCmd);
       const finalDur = res.success ? await getMediaDurationMs(cleanOutputPath) : actualDurationMs;
       processed.push({
         ...seg,
-        audioPath: res.success ? outputPath : seg.audioPath,
+        audioPath: res.success ? outputPath : sourcePath,
         durationMs: finalDur > 0 ? finalDur : actualDurationMs,
       });
     }
@@ -186,9 +192,16 @@ export async function buildSpeechTimelineTrack(
 
   // 2. Filter ready segments with verified audio and sort strictly by startTime
   // Do NOT mutate or distort original subtitle startTime timestamps!
-  const readySegments = speedAdjustedSegments
+  let readySegments = speedAdjustedSegments
     .filter((s) => s.audioPath)
     .sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
+
+  // Fallback: If speedAdjustedSegments was somehow empty, fallback directly to segments that have audioPath
+  if (readySegments.length === 0) {
+    readySegments = segments
+      .filter((s) => s.audioPath)
+      .sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
+  }
 
   if (readySegments.length === 0) {
     throw new Error('No valid TTS audio clips found to construct speech timeline.');
