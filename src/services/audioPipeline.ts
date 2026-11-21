@@ -65,16 +65,26 @@ async function processSegmentTTS(
         const pitchCmd = `-y -i "${chunkPath}" -filter:a "asetrate=44100*0.88,atempo=1.136" -vn "${pitchedPath}"`;
         const res = await runFFmpegCommand(pitchCmd);
         if (res.success) {
-          await FileSystem.deleteAsync(chunkPath, { idempotent: true });
-          await FileSystem.moveAsync({ from: pitchedPath, to: chunkPath });
+          try {
+            await FileSystem.deleteAsync(chunkPath, { idempotent: true });
+            await FileSystem.moveAsync({ from: pitchedPath, to: chunkPath });
+          } catch (_) {
+            await FileSystem.copyAsync({ from: pitchedPath, to: chunkPath });
+            await FileSystem.deleteAsync(pitchedPath, { idempotent: true });
+          }
         }
       } else if (seg.ageTone === 'KID') {
         const pitchedPath = chunkPath.replace(/\.mp3$/i, '_kid.mp3');
         const pitchCmd = `-y -i "${chunkPath}" -filter:a "asetrate=44100*1.15,atempo=0.87" -vn "${pitchedPath}"`;
         const res = await runFFmpegCommand(pitchCmd);
         if (res.success) {
-          await FileSystem.deleteAsync(chunkPath, { idempotent: true });
-          await FileSystem.moveAsync({ from: pitchedPath, to: chunkPath });
+          try {
+            await FileSystem.deleteAsync(chunkPath, { idempotent: true });
+            await FileSystem.moveAsync({ from: pitchedPath, to: chunkPath });
+          } catch (_) {
+            await FileSystem.copyAsync({ from: pitchedPath, to: chunkPath });
+            await FileSystem.deleteAsync(pitchedPath, { idempotent: true });
+          }
         }
       }
 

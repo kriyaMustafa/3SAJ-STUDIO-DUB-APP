@@ -20,6 +20,32 @@ export interface ImportProgress {
 export const DEFAULT_BACKEND_API_URL = 'https://threesaj-studio-dub-app.onrender.com';
 export const DEFAULT_EXTRACTION_API = `${DEFAULT_BACKEND_API_URL}/extract`;
 
+function toFriendlyExtractionError(status: number, errorText: string): Error {
+  const lower = errorText.toLowerCase();
+  let detail = errorText;
+  try {
+    const parsed = JSON.parse(errorText);
+    detail = parsed.detail || parsed.error || parsed.message || errorText;
+  } catch (_) {}
+
+  if (lower.includes('sign in') || lower.includes('confirm you') || lower.includes('bot')) {
+    return new Error('YouTube is temporarily blocking automatic imports on this server. Open the video in a browser or try again shortly.');
+  }
+  if (lower.includes('tiktok') || lower.includes('webpage')) {
+    return new Error('TikTok blocked this video or link. Try copying the full original TikTok URL, or use a direct MP4 link.');
+  }
+  if (lower.includes('private') || lower.includes('unavailable') || lower.includes('removed')) {
+    return new Error('This video is private, removed, region-blocked, or unavailable for download.');
+  }
+  if (status === 503 || lower.includes('timed out') || lower.includes('waking')) {
+    return new Error('The extraction server is waking up or busy. Wait 30 seconds, then try again.');
+  }
+  if (status >= 500) {
+    return new Error('The video server could not extract this link. Check that the link is public and try again.');
+  }
+  return new Error(detail || 'Could not extract this video URL.');
+}
+
 /**
  * Calls Backend Extraction API to resolve a social video URL (YouTube, Bilibili, etc.)
  * into direct downloadable MP4 and SRT subtitle URLs.
@@ -94,7 +120,7 @@ export async function fetchMediaFromUrl(
         };
       } else {
         const errorText = await response.text().catch(() => '');
-        throw new Error(`Extraction server error (${response.status}): ${errorText || response.statusText}`);
+        throw toFriendlyExtractionError(response.status, errorText || response.statusText);
       }
     } catch (err: any) {
       if (err.name === 'AbortError' || err.message === 'Aborted') {

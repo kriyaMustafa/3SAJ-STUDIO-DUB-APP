@@ -2,7 +2,7 @@
   "expo": {
     "name": "3SAJ Studio",
     "slug": "3saj-studio-app",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "scheme": "sajstudio",
     "userInterfaceStyle": "dark",

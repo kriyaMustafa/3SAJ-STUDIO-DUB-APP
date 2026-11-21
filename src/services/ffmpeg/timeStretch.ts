@@ -83,12 +83,47 @@ export async function fitAudioToSlot(
     };
   }
 
-  // Replace original file with stretched version
-  await FileSystem.deleteAsync(audioPath, { idempotent: true });
-  await FileSystem.moveAsync({
-    from: tempOutputPath,
-    to: audioPath,
-  });
+  // Replace the original only after the stretched file is confirmed present.
+  // Some Android builds reject same-directory moveAsync after URI resolution.
+  const tempInfo = await FileSystem.getInfoAsync(
+    tempOutputPath.startsWith('file://') ? tempOutputPath : `file://${tempOutputPath}`
+  );
+  if (!tempInfo.exists || (tempInfo.size ?? 0) < 44) {
+    await FileSystem.deleteAsync(tempOutputPath, { idempotent: true });
+    return {
+      stretched: false,
+      ratio: 1.0,
+      originalDurationMs: actualDurationMs,
+      finalDurationMs: actualDurationMs,
+      finalPath: audioPath,
+    };
+  }
+
+  try {
+    await FileSystem.deleteAsync(audioPath, { idempotent: true });
+    await FileSystem.moveAsync({
+      from: tempOutputPath,
+      to: audioPath,
+    });
+  } catch (moveErr) {
+    console.warn('[TimeStretch] moveAsync failed; copying stretched audio instead:', moveErr);
+    try {
+      await FileSystem.copyAsync({
+        from: tempOutputPath,
+        to: audioPath,
+      });
+      await FileSystem.deleteAsync(tempOutputPath, { idempotent: true });
+    } catch (copyErr) {
+      console.warn('[TimeStretch] copyAsync failed; keeping temp output:', copyErr);
+      return {
+        stretched: true,
+        ratio: targetRatio,
+        originalDurationMs: actualDurationMs,
+        finalDurationMs: Math.round(actualDurationMs / targetRatio),
+        finalPath: tempOutputPath,
+      };
+    }
+  }
 
   let finalDurationMs = await getMediaDurationMs(cleanPath);
   if (finalDurationMs <= 0) {

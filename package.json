@@ -1,6 +1,6 @@
 {
   "name": "3saj-studio-app",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Production AI Video Localization & Khmer Voice-Over Dubbing Mobile App",
   "main": "expo-router/entry",
   "scripts": {
