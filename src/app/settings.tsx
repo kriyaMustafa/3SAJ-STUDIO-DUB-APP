@@ -264,7 +264,7 @@ export default function SettingsScreen() {
       aiProvider,
       batchSize: parseInt(batchSize, 10) || 200,
       voiceMode,
-      maxConcurrentTts: Math.min(Math.max(1, parseInt(maxConcurrent, 10) || 5), 15),
+      maxConcurrentTts: Math.min(Math.max(1, parseInt(maxConcurrent, 10) || 3), 8),
       autoTimeStretch,
       bgmMode,
       demucsEndpoint: demucsUrl.trim(),

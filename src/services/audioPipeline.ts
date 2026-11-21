@@ -22,7 +22,7 @@ async function processSegmentTTS(
   seg: SubtitleSegment,
   projectWorkspaceDir: string,
   settings: AppSettings,
-  maxRetries: number = 3
+  maxRetries: number = 2
 ): Promise<SubtitleSegment> {
   const text = seg.translatedText || seg.originalText;
   if (!text.trim()) {
@@ -102,8 +102,8 @@ async function processSegmentTTS(
     } catch (err) {
       attempt++;
       lastError = err;
-      // Exponential backoff: 500ms, 1000ms, 2000ms
-      const backoffMs = Math.min(500 * Math.pow(2, attempt - 1), 3000);
+      // Short backoff avoids turning a provider outage into a retry storm.
+      const backoffMs = attempt === 1 ? 250 : 500;
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
     }
   }
@@ -130,7 +130,7 @@ export async function runTtsPipeline(
   allReady: boolean;
 }> {
   const updatedSegments = [...segments];
-  const maxConcurrent = Math.min(Math.max(1, settings.maxConcurrentTts || 5), 15);
+  const maxConcurrent = Math.min(Math.max(1, settings.maxConcurrentTts || 3), 8);
 
   // Collect segments that need synthesis (translated or pending with text)
   const pendingIndices: number[] = [];

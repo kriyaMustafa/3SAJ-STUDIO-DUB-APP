@@ -49,7 +49,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   voiceMode: 'AUTO_DETECT',
   maleVoice: 'km-KH-PisethNeural',
   femaleVoice: 'km-KH-SreymomNeural',
-  maxConcurrentTts: 5,
+  maxConcurrentTts: 3,
   autoTimeStretch: true,
   maxAtempo: 2.0,
   bgmMode: 'MUTE_ORIGINAL',

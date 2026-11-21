@@ -110,7 +110,7 @@ async function toArrayBuffer(data: any): Promise<ArrayBuffer | null> {
  */
 export async function synthesizeSpeechWebSocket(
   params: EdgeTtsRequest,
-  timeoutMs: number = 15000
+  timeoutMs: number = 9000
 ): Promise<string> {
   const text = params.text.trim();
   if (!text) {
@@ -238,8 +238,24 @@ export async function synthesizeSpeechWebSocket(
             if (arrayBuf && arrayBuf.byteLength > 2) {
               const dv = new DataView(arrayBuf);
               const headerLength = dv.getUint16(0, false); // big-endian uint16
-              if (arrayBuf.byteLength > headerLength + 2) {
-                const audioPayload = new Uint8Array(arrayBuf.slice(headerLength + 2));
+                  const payloadOffset = headerLength + 2;
+                  if (
+                    payloadOffset <= arrayBuf.byteLength &&
+                    headerLength > 0 &&
+                    headerLength < 4096
+                  ) {
+                    const headerBytes = new Uint8Array(arrayBuf.slice(2, payloadOffset));
+                    let header = '';
+                    for (let i = 0; i < headerBytes.length; i++) {
+                      header += String.fromCharCode(headerBytes[i]);
+                    }
+                    const isAudioPayload =
+                      !header.includes('Path:turn.start') &&
+                      !header.includes('Path:response');
+
+                    if (!isAudioPayload) return;
+
+                    const audioPayload = new Uint8Array(arrayBuf.slice(payloadOffset));
                 if (audioPayload.length > 0) {
                   audioChunks.push(audioPayload);
                 }
@@ -365,13 +381,13 @@ export async function synthesizeGoogleKhmerTts(params: EdgeTtsRequest): Promise<
 export async function synthesizeEdgeTts(params: EdgeTtsRequest): Promise<string> {
   // 1. Primary Attempt: Microsoft Edge-TTS (Piseth & Sreymom)
   try {
-    return await synthesizeSpeechWebSocket(params, 12000);
+    return await synthesizeSpeechWebSocket(params, 8000);
   } catch (primaryErr) {
     console.warn('[TTS] Edge-TTS primary attempt failed, retrying Edge-TTS:', primaryErr);
     // 2. Retry Attempt: Microsoft Edge-TTS
     try {
-      await new Promise((r) => setTimeout(r, 800));
-      return await synthesizeSpeechWebSocket(params, 15000);
+      await new Promise((r) => setTimeout(r, 250));
+      return await synthesizeSpeechWebSocket(params, 10000);
     } catch (retryErr) {
       console.warn('[TTS] Edge-TTS retry failed, falling back to Google Khmer:', retryErr);
       // 3. Last Resort Fallback: Google Translate Khmer TTS
