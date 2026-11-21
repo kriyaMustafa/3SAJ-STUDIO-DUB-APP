@@ -8,7 +8,20 @@ export class VideoSaveService {
    */
   async saveToGallery(localVideoPath: string): Promise<boolean> {
     try {
-      const { status } = await MediaLibrary.requestPermissionsAsync();
+      const cleanUri = localVideoPath.startsWith('file://')
+        ? localVideoPath
+        : `file://${localVideoPath}`;
+
+      const fileInfo = await FileSystem.getInfoAsync(cleanUri);
+      if (!fileInfo.exists || (fileInfo.size ?? 0) < 64) {
+        Alert.alert('Save Failed', 'The exported video file is missing or incomplete.');
+        return false;
+      }
+
+      const { status } = await MediaLibrary.requestPermissionsAsync(
+        false,
+        ['video']
+      );
       if (status !== 'granted') {
         Alert.alert(
           'Permission Required',
@@ -16,10 +29,6 @@ export class VideoSaveService {
         );
         return false;
       }
-
-      const cleanUri = localVideoPath.startsWith('file://')
-        ? localVideoPath
-        : `file://${localVideoPath}`;
 
       const asset = await MediaLibrary.createAssetAsync(cleanUri);
       if (asset) {

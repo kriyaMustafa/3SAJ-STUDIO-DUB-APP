@@ -1,4 +1,5 @@
 import * as MediaLibrary from 'expo-media-library';
+import * as FileSystem from 'expo-file-system';
 import { runFFmpegCommand } from './ffmpegRunner';
 
 export interface MuxResult {
@@ -30,28 +31,22 @@ export async function muxVideoWithAudio(
     const cleanAudio = audioPath.replace(/^file:\/\//, '');
     const cleanOutput = outputPath.replace(/^file:\/\//, '');
 
-    // Primary: Universally compatible H.264 / AAC MP4 for Android Gallery
-    // -map 0:v:0 takes ONLY the video stream from the video file (stripping original audio 0:a)
-    // -map 1:a:0 takes ONLY the dubbed voice audio track from audioPath
-    // -c:v libx264 -pix_fmt yuv420p -profile:v high -level 4.1 guarantees 100% hardware decoding on all Android devices
-    // -preset veryfast -crf 22 balances maximum visual quality with rapid rendering
-    // -c:a aac -ar 44100 -ac 2 -b:a 192k standardizes stereo audio
-    // -movflags +faststart moves moov atom to the front to eliminate "Unsupported video" error in Gallery
-    // -shortest ensures the output video duration never exceeds the video track duration
-    const muxCommand = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v:0 -map 1:a:0 -c:v libx264 -pix_fmt yuv420p -profile:v high -level 4.1 -preset veryfast -crf 22 -c:a aac -ar 44100 -ac 2 -b:a 192k -shortest -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
+    // Primary: copy the existing video stream unchanged. This is the fastest export
+    // path and avoids re-encoding every frame for already-compatible MP4/H.264 files.
+    const muxCommand = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v:0 -map 1:a:0 -sn -dn -c:v copy -c:a aac -ar 44100 -ac 2 -b:a 128k -shortest -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
 
     let result = await runFFmpegCommand(muxCommand);
 
     if (!result.success) {
-      console.warn('[VideoMuxer] Primary H.264 transcode attempt failed, trying generic stream mapping:', result.outputLogs);
-      // Fallback 1: try generic stream mapping -map 0:v -map 1:a with exact same universal H.264/AAC settings and -shortest
-      const fallbackMux = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v -map 1:a -c:v libx264 -pix_fmt yuv420p -profile:v high -level 4.1 -preset veryfast -crf 22 -c:a aac -ar 44100 -ac 2 -b:a 192k -shortest -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
+      console.warn('[VideoMuxer] Stream-copy mux failed, trying fast H.264 transcode:', result.outputLogs);
+      // Fallback 1: fast software transcode for incompatible/unsupported source codecs.
+      const fallbackMux = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v:0 -map 1:a:0 -sn -dn -c:v libx264 -pix_fmt yuv420p -profile:v high -level 4.1 -preset ultrafast -crf 26 -threads 0 -c:a aac -ar 44100 -ac 2 -b:a 128k -shortest -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
       result = await runFFmpegCommand(fallbackMux);
 
       if (!result.success) {
         console.warn('[VideoMuxer] Generic stream mapping failed, attempting fast stream copy fallback:', result.outputLogs);
         // Fallback 2: Stream copy video track with standardized AAC audio and -shortest
-        const copyFallback = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -ar 44100 -ac 2 -b:a 192k -shortest -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
+        const copyFallback = `-y -i "${cleanVideo}" -i "${cleanAudio}" -map 0:v:0 -map 1:a:0 -sn -dn -c:v copy -c:a aac -ar 44100 -ac 2 -b:a 128k -shortest -avoid_negative_ts make_zero -fflags +genpts -movflags +faststart "${cleanOutput}"`;
         result = await runFFmpegCommand(copyFallback);
 
         if (!result.success) {
@@ -67,9 +62,18 @@ export async function muxVideoWithAudio(
 
     if (saveToCameraRoll) {
       try {
-        const { status } = await MediaLibrary.requestPermissionsAsync();
+        const cleanUri = outputPath.startsWith('file://') ? outputPath : `file://${outputPath}`;
+        const fileInfo = await FileSystem.getInfoAsync(cleanUri);
+        if (!fileInfo.exists || (fileInfo.size ?? 0) < 64) {
+          console.warn('[VideoMuxer] Exported file is missing or incomplete');
+        }
+
+        const { status } = await MediaLibrary.requestPermissionsAsync(
+          false,
+          ['video']
+        );
         if (status === 'granted') {
-          const cleanUri = outputPath.startsWith('file://') ? outputPath : `file://${outputPath}`;
+          if (!fileInfo.exists) throw new Error('Exported video file does not exist');
           const asset = await MediaLibrary.createAssetAsync(cleanUri);
           if (asset && asset.uri) {
             savedToGallery = true;
