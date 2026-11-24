@@ -4,6 +4,8 @@ import json
 import uuid
 import datetime
 import logging
+import tempfile
+import base64
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Depends, Header, status
@@ -1576,11 +1578,262 @@ def stream_tiktok_video(url: str):
 
     return StreamingResponse(iter_chunks(), media_type="video/mp4", headers=resp_headers)
 
+@app.get("/api/video/stream")
+def stream_video(url: str):
+    """
+    Proxies video stream from upstream CDNs (YouTube, TikTok, etc.)
+    with Range support and clean headers to avoid 403 Forbidden or CORS issues.
+    """
+    raw_url = unquote_plus(url)
+    upstream_headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Range': 'bytes=0-'
+    }
+    if "youtube.com" in raw_url or "googlevideo.com" in raw_url:
+        upstream_headers['Referer'] = 'https://www.youtube.com/'
+        upstream_headers['Origin'] = 'https://www.youtube.com'
+
+    try:
+        upstream = requests.get(raw_url, headers=upstream_headers, stream=True, timeout=30)
+    except Exception as e:
+        logger.error(f"Upstream stream connection error: {e}")
+        raise HTTPException(status_code=502, detail="Could not connect to video stream provider")
+
+    if upstream.status_code not in (200, 206):
+        logger.warning(f"Upstream stream failed with status {upstream.status_code} for {raw_url[:60]}")
+        raise HTTPException(status_code=upstream.status_code, detail="Remote video server rejected streaming request")
+
+    def iter_chunks():
+        for chunk in upstream.iter_content(chunk_size=128 * 1024):
+            if chunk:
+                yield chunk
+
+    resp_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": "video/mp4",
+    }
+    if "Content-Range" in upstream.headers:
+        parts = upstream.headers["Content-Range"].split("/")
+        if len(parts) == 2 and parts[1].isdigit():
+            resp_headers["Content-Length"] = parts[1]
+    elif "Content-Length" in upstream.headers:
+        resp_headers["Content-Length"] = upstream.headers["Content-Length"]
+
+    return StreamingResponse(iter_chunks(), media_type="video/mp4", headers=resp_headers)
+
+def extract_youtube_id(url: str) -> Optional[str]:
+    patterns = [
+        r'(?:v=|\/v\/|youtu\.be\/|embed\/|shorts\/|watch\?v=|\&v=)([a-zA-Z0-9_-]{11})',
+        r'^([a-zA-Z0-9_-]{11})$'
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
+
+def extract_youtube_invidious(video_id: str) -> Optional[dict]:
+    instances = [
+        "https://yewtu.be",
+        "https://invidious.nerdvpn.de",
+        "https://invidious.private.coffee",
+        "https://inv.nadeko.net",
+        "https://invidious.projectsegfau.lt",
+        "https://invidious.drgns.space",
+    ]
+    for instance in instances:
+        try:
+            api_url = f"{instance}/api/v1/videos/{video_id}"
+            resp = requests.get(
+                api_url,
+                timeout=8,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                    "Accept": "application/json"
+                }
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                title = data.get("title") or "YouTube Video"
+                duration = data.get("lengthSeconds")
+                thumbnail = None
+                if data.get("videoThumbnails"):
+                    thumbnail = data["videoThumbnails"][-1].get("url")
+
+                format_streams = data.get("formatStreams", [])
+                mp4_streams = [
+                    s for s in format_streams
+                    if s.get("container") == "mp4" or "mp4" in s.get("type", "")
+                ]
+                video_url = None
+                if mp4_streams:
+                    video_url = mp4_streams[-1].get("url") or mp4_streams[0].get("url")
+                elif format_streams:
+                    video_url = format_streams[-1].get("url") or format_streams[0].get("url")
+
+                if not video_url and data.get("adaptiveFormats"):
+                    for af in data["adaptiveFormats"]:
+                        if "mp4" in af.get("type", "") and af.get("url"):
+                            video_url = af.get("url")
+                            break
+
+                srt_content = None
+                captions = data.get("captions", [])
+                if captions:
+                    chosen_cap = None
+                    for lang_code in ["zh", "zh-hans", "zh-hant", "en", "km"]:
+                        for cap in captions:
+                            if lang_code in cap.get("languageCode", "").lower():
+                                chosen_cap = cap
+                                break
+                        if chosen_cap:
+                            break
+                    if not chosen_cap and captions:
+                        chosen_cap = captions[0]
+
+                    if chosen_cap and chosen_cap.get("url"):
+                        cap_url = chosen_cap["url"]
+                        if cap_url.startswith("/"):
+                            cap_url = f"{instance}{cap_url}"
+                        try:
+                            cap_res = requests.get(cap_url, timeout=6)
+                            if cap_res.status_code == 200:
+                                raw_sub = cap_res.text
+                                if "WEBVTT" in raw_sub:
+                                    srt_content = convert_vtt_to_srt(raw_sub)
+                                else:
+                                    srt_content = raw_sub
+                        except Exception as ex:
+                            logger.warning(f"Error fetching Invidious caption: {ex}")
+
+                if video_url:
+                    return {
+                        "title": title,
+                        "video_url": video_url,
+                        "srt_content": srt_content,
+                        "duration": duration,
+                        "thumbnail": thumbnail,
+                    }
+        except Exception as e:
+            logger.warning(f"Invidious instance {instance} failed for {video_id}: {e}")
+            continue
+    return None
+
+def extract_youtube_piped(video_id: str) -> Optional[dict]:
+    instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.yt",
+        "https://pipedapi.adminforge.de",
+        "https://api.piped.private.coffee",
+    ]
+    for instance in instances:
+        try:
+            api_url = f"{instance}/streams/{video_id}"
+            resp = requests.get(
+                api_url,
+                timeout=8,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+                }
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                title = data.get("title") or "YouTube Video"
+                duration = data.get("duration")
+                thumbnail = data.get("thumbnailUrl")
+                v_streams = data.get("videoStreams", [])
+                muxed = [s for s in v_streams if not s.get("videoOnly") and s.get("url")]
+                video_url = None
+                if muxed:
+                    video_url = muxed[0].get("url")
+                elif v_streams:
+                    mp4s = [s for s in v_streams if s.get("format") == "MPEG_4" and s.get("url")]
+                    if mp4s:
+                        video_url = mp4s[0].get("url")
+                    else:
+                        video_url = v_streams[0].get("url")
+
+                srt_content = None
+                subtitles = data.get("subtitles", [])
+                if subtitles:
+                    chosen_sub = None
+                    for lang in ["zh", "en", "km"]:
+                        for s in subtitles:
+                            if lang in s.get("code", "").lower():
+                                chosen_sub = s
+                                break
+                        if chosen_sub:
+                            break
+                    if not chosen_sub and subtitles:
+                        chosen_sub = subtitles[0]
+                    if chosen_sub and chosen_sub.get("url"):
+                        try:
+                            sub_res = requests.get(chosen_sub["url"], timeout=6)
+                            if sub_res.status_code == 200:
+                                raw = sub_res.text
+                                if "WEBVTT" in raw:
+                                    srt_content = convert_vtt_to_srt(raw)
+                                else:
+                                    srt_content = raw
+                        except Exception:
+                            pass
+
+                if video_url:
+                    return {
+                        "title": title,
+                        "video_url": video_url,
+                        "srt_content": srt_content,
+                        "duration": duration,
+                        "thumbnail": thumbnail,
+                    }
+        except Exception as e:
+            logger.warning(f"Piped instance {instance} failed for {video_id}: {e}")
+            continue
+    return None
+
+def extract_youtube_cobalt(url: str) -> Optional[dict]:
+    cobalt_endpoints = [
+        "https://co.wuk.sh/api/json",
+        "https://cobalt.api.hyper.lol",
+    ]
+    for endpoint in cobalt_endpoints:
+        try:
+            resp = requests.post(
+                endpoint,
+                json={
+                    "url": url,
+                    "videoQuality": "720",
+                    "youtubeVideoCodec": "h264",
+                    "youtubeVideoContainer": "mp4"
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                },
+                timeout=10
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("url"):
+                    return {
+                        "title": "YouTube Video",
+                        "video_url": data.get("url"),
+                        "srt_content": None,
+                        "duration": None,
+                        "thumbnail": None
+                    }
+        except Exception as e:
+            logger.warning(f"Cobalt endpoint {endpoint} failed: {e}")
+            continue
+    return None
+
 @app.post("/extract", response_model=ExtractResponse)
 def extract_media(req: ExtractRequest):
     raw_url = req.url.strip()
     if not raw_url:
         raise HTTPException(status_code=400, detail="Video URL is required")
+
+    backend_base = os.environ.get("BACKEND_URL", "https://threesaj-studio-dub-app.onrender.com").rstrip("/")
 
     if raw_url.lower().endswith(".mp4"):
         file_name = raw_url.split("/")[-1].replace(".mp4", "")
@@ -1595,7 +1848,6 @@ def extract_media(req: ExtractRequest):
     if is_tiktok:
         try:
             tiktok_info = extract_tiktok_media(raw_url)
-            backend_base = os.environ.get("BACKEND_URL", "https://threesaj-studio-dub-app.onrender.com").rstrip("/")
             stream_url = f"{backend_base}/api/video/tiktok?url={quote_plus(raw_url)}"
             return ExtractResponse(
                 title=tiktok_info["title"],
@@ -1606,6 +1858,28 @@ def extract_media(req: ExtractRequest):
             )
         except Exception as e:
             logger.warning(f"Native TikTok extraction failed ({e}), falling back to yt-dlp...")
+
+    is_youtube = any(d in raw_url.lower() for d in ["youtube.com", "youtu.be", "youtube-nocookie.com"])
+
+    # Setup cookies if configured via environment or local file
+    cookie_file = None
+    yt_cookies_env = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("YT_COOKIES")
+    if yt_cookies_env:
+        try:
+            temp_cookie_path = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
+            try:
+                decoded = base64.b64decode(yt_cookies_env).decode("utf-8")
+                if "youtube.com" in decoded or "Netscape" in decoded:
+                    yt_cookies_env = decoded
+            except Exception:
+                pass
+            with open(temp_cookie_path, "w", encoding="utf-8") as f:
+                f.write(yt_cookies_env)
+            cookie_file = temp_cookie_path
+        except Exception as ce:
+            logger.warning(f"Could not write cookie file from env: {ce}")
+    elif os.path.exists("cookies.txt"):
+        cookie_file = "cookies.txt"
 
     ydl_opts = {
         "format": "best[ext=mp4]/best",
@@ -1620,17 +1894,47 @@ def extract_media(req: ExtractRequest):
         },
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web"],
+                "player_client": ["ios", "android_vr", "mweb", "tv"],
+                "player_skip": ["web", "configs"],
             },
         },
     }
+    if cookie_file:
+        ydl_opts["cookiefile"] = cookie_file
 
+    info = None
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(raw_url, download=False)
     except Exception as e:
-        logger.error(f"yt-dlp extraction error for {raw_url}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to extract media: {str(e)}")
+        err_str = str(e)
+        logger.warning(f"yt-dlp primary extraction failed for {raw_url}: {err_str}")
+        if is_youtube:
+            logger.info("Attempting multi-layer fallback extractors for YouTube...")
+            yt_id = extract_youtube_id(raw_url)
+            fallback_res = None
+            if yt_id:
+                fallback_res = extract_youtube_invidious(yt_id)
+                if not fallback_res:
+                    fallback_res = extract_youtube_piped(yt_id)
+            if not fallback_res:
+                fallback_res = extract_youtube_cobalt(raw_url)
+
+            if fallback_res and fallback_res.get("video_url"):
+                v_url = fallback_res["video_url"]
+                # Wrap through streaming proxy if needed
+                if "googlevideo.com" in v_url or not v_url.startswith("https://co."):
+                    v_url = f"{backend_base}/api/video/stream?url={quote_plus(v_url)}"
+
+                return ExtractResponse(
+                    title=fallback_res.get("title") or "YouTube_Video",
+                    videoUrl=v_url,
+                    srtContent=fallback_res.get("srt_content") or "1\n00:00:00,500 --> 00:00:05,000\n[Dialogue 1 - Tap to edit or translate]\n\n",
+                    thumbnailUrl=fallback_res.get("thumbnail"),
+                    durationSeconds=int(fallback_res["duration"]) if fallback_res.get("duration") else None
+                )
+
+        raise HTTPException(status_code=500, detail=f"Failed to extract media: {err_str}")
 
     if not info:
         raise HTTPException(status_code=404, detail="No media information found for this URL.")
@@ -1674,8 +1978,21 @@ def extract_media(req: ExtractRequest):
     if not video_url:
         video_url = info.get("url")
 
+    # If yt-dlp extracted media metadata but video stream link failed, try fallbacks
+    if not video_url and is_youtube:
+        yt_id = extract_youtube_id(raw_url)
+        fallback_res = extract_youtube_invidious(yt_id) if yt_id else None
+        if not fallback_res and yt_id:
+            fallback_res = extract_youtube_piped(yt_id)
+        if fallback_res and fallback_res.get("video_url"):
+            video_url = fallback_res["video_url"]
+
     if not video_url:
         raise HTTPException(status_code=500, detail="Could not resolve downloadable video stream URL.")
+
+    # Proxy YouTube video streams through backend to avoid client IP binding 403 Forbidden
+    if "googlevideo.com" in video_url or is_youtube:
+        video_url = f"{backend_base}/api/video/stream?url={quote_plus(video_url)}"
 
     srt_content = None
     subtitles = info.get("subtitles") or {}
