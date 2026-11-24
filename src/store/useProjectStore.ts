@@ -55,7 +55,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bgmMode: 'MUTE_ORIGINAL',
   duckingVolume: 0.05,
   demucsEndpoint: 'http://192.168.1.100:8000/api/separate',
-  backendApiUrl: 'https://threesaj-studio-dub-app.onrender.com',
+  backendApiUrl: 'https://threesaj-studio-dub-app-734y.onrender.com',
   autoExport: false,
   workspaceDir: FileSystem.documentDirectory ? `${FileSystem.documentDirectory}3saj_projects` : '3saj_projects',
 };
@@ -188,21 +188,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             !parsed.backendApiUrl ||
             parsed.backendApiUrl.includes('192.168.1.X') ||
             parsed.backendApiUrl.includes('10.0.2.2') ||
-            parsed.backendApiUrl.includes('3saj-studio-dub-app.onrender.com')
+            parsed.backendApiUrl.includes('3saj-studio-dub-app.onrender.com') ||
+            parsed.backendApiUrl.includes('threesaj-studio-dub-app.onrender.com')
           ) {
-            parsed.backendApiUrl = 'https://threesaj-studio-dub-app.onrender.com';
+            parsed.backendApiUrl = 'https://threesaj-studio-dub-app-734y.onrender.com';
           }
           set((state) => ({ settings: { ...state.settings, ...parsed } }));
           authService.setBackendUrl(parsed.backendApiUrl);
         } else {
-          authService.setBackendUrl('https://threesaj-studio-dub-app.onrender.com');
+          authService.setBackendUrl('https://threesaj-studio-dub-app-734y.onrender.com');
         }
       } catch (_) {
-        authService.setBackendUrl('https://threesaj-studio-dub-app.onrender.com');
+        authService.setBackendUrl('https://threesaj-studio-dub-app-734y.onrender.com');
       }
     } catch (err) {
       console.warn('initStore error during startup:', err);
-      authService.setBackendUrl('https://threesaj-studio-dub-app.onrender.com');
+      authService.setBackendUrl('https://threesaj-studio-dub-app-734y.onrender.com');
     }
   },
 

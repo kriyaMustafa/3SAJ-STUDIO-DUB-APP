@@ -6,9 +6,10 @@ import datetime
 import logging
 import tempfile
 import base64
+import html
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Depends, Header, status
+from fastapi import FastAPI, HTTPException, Depends, Header, status, Request, Response
 from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse
 from urllib.parse import quote_plus, unquote_plus
 from fastapi.middleware.cors import CORSMiddleware
@@ -1452,6 +1453,41 @@ def convert_vtt_to_srt(vtt_text: str) -> str:
 
     return "\n".join(srt_lines)
 
+def convert_ttml_to_srt(ttml_text: str) -> str:
+    """Converts TTML / XML subtitles to clean standard SRT format."""
+    p_pattern = re.compile(r'<p\s+begin="([^"]+)"\s+end="([^"]+)"[^>]*>(.*?)</p>', re.DOTALL | re.IGNORECASE)
+    matches = p_pattern.findall(ttml_text)
+    if not matches:
+        return ttml_text
+
+    srt_blocks = []
+    counter = 1
+
+    def format_timestamp(ts: str) -> str:
+        ts = ts.strip().replace(".", ",")
+        if ts.count(":") == 1:
+            ts = "00:" + ts
+        parts = ts.split(",")
+        if len(parts) == 2:
+            ms = parts[1][:3].ljust(3, "0")
+            return f"{parts[0]},{ms}"
+        return f"{ts},000"
+
+    for begin, end, body in matches:
+        text = re.sub(r'<br\s*/?>', '\n', body, flags=re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', '', text)
+        text = html.unescape(text).strip()
+        if not text:
+            continue
+
+        start_time = format_timestamp(begin)
+        end_time = format_timestamp(end)
+
+        srt_blocks.append(f"{counter}\n{start_time} --> {end_time}\n{text}\n")
+        counter += 1
+
+    return "\n".join(srt_blocks)
+
 def extract_tiktok_media(url: str) -> dict:
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
@@ -1578,8 +1614,8 @@ def stream_tiktok_video(url: str):
 
     return StreamingResponse(iter_chunks(), media_type="video/mp4", headers=resp_headers)
 
-@app.get("/api/video/stream")
-def stream_video(url: str):
+@app.api_route("/api/video/stream", methods=["GET", "HEAD"])
+def stream_video(request: Request, url: str):
     """
     Proxies video stream from upstream CDNs (YouTube, TikTok, etc.)
     with Range support and clean headers to avoid 403 Forbidden or CORS issues.
@@ -1587,11 +1623,29 @@ def stream_video(url: str):
     raw_url = unquote_plus(url)
     upstream_headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-        'Range': 'bytes=0-'
     }
+    client_range = request.headers.get("Range")
+    if client_range:
+        upstream_headers['Range'] = client_range
+    else:
+        upstream_headers['Range'] = 'bytes=0-'
+
     if "youtube.com" in raw_url or "googlevideo.com" in raw_url:
         upstream_headers['Referer'] = 'https://www.youtube.com/'
         upstream_headers['Origin'] = 'https://www.youtube.com'
+
+    if request.method == "HEAD":
+        try:
+            head_res = requests.head(raw_url, headers=upstream_headers, timeout=15)
+            resp_headers = {
+                "Accept-Ranges": "bytes",
+                "Content-Type": head_res.headers.get("Content-Type", "video/mp4"),
+            }
+            if "Content-Length" in head_res.headers:
+                resp_headers["Content-Length"] = head_res.headers["Content-Length"]
+            return Response(status_code=head_res.status_code if head_res.status_code in (200, 206) else 200, headers=resp_headers)
+        except Exception:
+            return Response(status_code=200, headers={"Accept-Ranges": "bytes", "Content-Type": "video/mp4"})
 
     try:
         upstream = requests.get(raw_url, headers=upstream_headers, stream=True, timeout=30)
@@ -1610,16 +1664,19 @@ def stream_video(url: str):
 
     resp_headers = {
         "Accept-Ranges": "bytes",
-        "Content-Type": "video/mp4",
+        "Content-Type": upstream.headers.get("Content-Type", "video/mp4"),
     }
     if "Content-Range" in upstream.headers:
-        parts = upstream.headers["Content-Range"].split("/")
-        if len(parts) == 2 and parts[1].isdigit():
-            resp_headers["Content-Length"] = parts[1]
-    elif "Content-Length" in upstream.headers:
+        resp_headers["Content-Range"] = upstream.headers["Content-Range"]
+    if "Content-Length" in upstream.headers:
         resp_headers["Content-Length"] = upstream.headers["Content-Length"]
 
-    return StreamingResponse(iter_chunks(), media_type="video/mp4", headers=resp_headers)
+    return StreamingResponse(
+        iter_chunks(),
+        status_code=upstream.status_code,
+        media_type="video/mp4",
+        headers=resp_headers
+    )
 
 def extract_youtube_id(url: str) -> Optional[str]:
     patterns = [
@@ -1701,6 +1758,8 @@ def extract_youtube_invidious(video_id: str) -> Optional[dict]:
                                 raw_sub = cap_res.text
                                 if "WEBVTT" in raw_sub:
                                     srt_content = convert_vtt_to_srt(raw_sub)
+                                elif "<?xml" in raw_sub or "<tt" in raw_sub:
+                                    srt_content = convert_ttml_to_srt(raw_sub)
                                 else:
                                     srt_content = raw_sub
                         except Exception as ex:
@@ -1721,10 +1780,10 @@ def extract_youtube_invidious(video_id: str) -> Optional[dict]:
 
 def extract_youtube_piped(video_id: str) -> Optional[dict]:
     instances = [
-        "https://pipedapi.kavin.rocks",
-        "https://api.piped.yt",
-        "https://pipedapi.adminforge.de",
         "https://api.piped.private.coffee",
+        "https://pipedapi.adminforge.de",
+        "https://api.piped.yt",
+        "https://pipedapi.kavin.rocks",
     ]
     for instance in instances:
         try:
@@ -1742,16 +1801,23 @@ def extract_youtube_piped(video_id: str) -> Optional[dict]:
                 duration = data.get("duration")
                 thumbnail = data.get("thumbnailUrl")
                 v_streams = data.get("videoStreams", [])
-                muxed = [s for s in v_streams if not s.get("videoOnly") and s.get("url")]
+
+                # Filter out odycdn/lbry links which fail on direct download
+                valid_streams = [
+                    s for s in v_streams
+                    if s.get("url") and "odycdn" not in s.get("url") and "lbry" not in s.get("url")
+                ]
+
+                # Look for muxed streams with audio & video
+                muxed = [s for s in valid_streams if not s.get("videoOnly")]
                 video_url = None
                 if muxed:
-                    video_url = muxed[0].get("url")
-                elif v_streams:
-                    mp4s = [s for s in v_streams if s.get("format") == "MPEG_4" and s.get("url")]
-                    if mp4s:
-                        video_url = mp4s[0].get("url")
-                    else:
-                        video_url = v_streams[0].get("url")
+                    # Prefer videoplayback proxy streams
+                    proxied = [s for s in muxed if "videoplayback" in s.get("url")]
+                    video_url = (proxied[0] if proxied else muxed[0]).get("url")
+                elif valid_streams:
+                    mp4s = [s for s in valid_streams if s.get("format") in ("MPEG_4", "MP4")]
+                    video_url = (mp4s[0] if mp4s else valid_streams[0]).get("url")
 
                 srt_content = None
                 subtitles = data.get("subtitles", [])
@@ -1773,6 +1839,8 @@ def extract_youtube_piped(video_id: str) -> Optional[dict]:
                                 raw = sub_res.text
                                 if "WEBVTT" in raw:
                                     srt_content = convert_vtt_to_srt(raw)
+                                elif "<?xml" in raw or "<tt" in raw:
+                                    srt_content = convert_ttml_to_srt(raw)
                                 else:
                                     srt_content = raw
                         except Exception:
@@ -1833,7 +1901,7 @@ def extract_media(req: ExtractRequest):
     if not raw_url:
         raise HTTPException(status_code=400, detail="Video URL is required")
 
-    backend_base = os.environ.get("BACKEND_URL", "https://threesaj-studio-dub-app.onrender.com").rstrip("/")
+    backend_base = os.environ.get("BACKEND_URL", "https://threesaj-studio-dub-app-734y.onrender.com").rstrip("/")
 
     if raw_url.lower().endswith(".mp4"):
         file_name = raw_url.split("/")[-1].replace(".mp4", "")
@@ -1922,8 +1990,8 @@ def extract_media(req: ExtractRequest):
 
             if fallback_res and fallback_res.get("video_url"):
                 v_url = fallback_res["video_url"]
-                # Wrap through streaming proxy if needed
-                if "googlevideo.com" in v_url or not v_url.startswith("https://co."):
+                # Wrap through streaming proxy only if googlevideo link is tied to server IP
+                if "googlevideo.com" in v_url and "proxy.piped" not in v_url:
                     v_url = f"{backend_base}/api/video/stream?url={quote_plus(v_url)}"
 
                 return ExtractResponse(
@@ -1991,7 +2059,7 @@ def extract_media(req: ExtractRequest):
         raise HTTPException(status_code=500, detail="Could not resolve downloadable video stream URL.")
 
     # Proxy YouTube video streams through backend to avoid client IP binding 403 Forbidden
-    if "googlevideo.com" in video_url or is_youtube:
+    if video_url and "googlevideo.com" in video_url and "proxy.piped" not in video_url:
         video_url = f"{backend_base}/api/video/stream?url={quote_plus(video_url)}"
 
     srt_content = None
@@ -2029,6 +2097,8 @@ def extract_media(req: ExtractRequest):
                     raw_sub = sub_res.text
                     if target_sub.get("ext") == "vtt" or "WEBVTT" in raw_sub:
                         srt_content = convert_vtt_to_srt(raw_sub)
+                    elif "<?xml" in raw_sub or "<tt" in raw_sub:
+                        srt_content = convert_ttml_to_srt(raw_sub)
                     else:
                         srt_content = raw_sub
             except Exception as e:

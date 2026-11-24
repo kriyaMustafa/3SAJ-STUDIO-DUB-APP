@@ -42,7 +42,7 @@ export class CentralPaymentClient {
    */
   async prewarm(): Promise<void> {
     try {
-      const backendUrl = authService.getBackendUrl() || 'https://threesaj-studio-dub-app.onrender.com';
+      const backendUrl = authService.getBackendUrl() || 'https://threesaj-studio-dub-app-734y.onrender.com';
       fetch(`${backendUrl}/health`, { method: 'GET' }).catch(() => {});
     } catch {
       // Ignore background prewarm errors
@@ -75,7 +75,7 @@ export class CentralPaymentClient {
       headers.Authorization = `Bearer ${token}`;
     }
 
-    const backendUrl = authService.getBackendUrl() || 'https://threesaj-studio-dub-app.onrender.com';
+    const backendUrl = authService.getBackendUrl() || 'https://threesaj-studio-dub-app-734y.onrender.com';
     let lastError: any = null;
 
     // Retry up to 3 times with 45s timeout to seamlessly handle Render free-tier cold starts

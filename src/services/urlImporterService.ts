@@ -17,7 +17,7 @@ export interface ImportProgress {
 }
 
 // Configurable backend extraction endpoint (e.g. yt-dlp microservice or custom FastAPI server)
-export const DEFAULT_BACKEND_API_URL = 'https://threesaj-studio-dub-app.onrender.com';
+export const DEFAULT_BACKEND_API_URL = 'https://threesaj-studio-dub-app-734y.onrender.com';
 export const DEFAULT_EXTRACTION_API = `${DEFAULT_BACKEND_API_URL}/extract`;
 
 function toFriendlyExtractionError(status: number, errorText: string): Error {

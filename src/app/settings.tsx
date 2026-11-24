@@ -71,7 +71,7 @@ export default function SettingsScreen() {
   const [autoTimeStretch, setAutoTimeStretch] = useState(settings.autoTimeStretch);
   const [bgmMode, setBgmMode] = useState<BGMMode>(settings.bgmMode);
   const [demucsUrl, setDemucsUrl] = useState(settings.demucsEndpoint);
-  const [backendApiUrl, setBackendApiUrl] = useState(settings.backendApiUrl || 'https://threesaj-studio-dub-app.onrender.com');
+  const [backendApiUrl, setBackendApiUrl] = useState(settings.backendApiUrl || 'https://threesaj-studio-dub-app-734y.onrender.com');
   const [testingBackend, setTestingBackend] = useState(false);
 
   const handleTestBackend = async () => {
@@ -771,13 +771,13 @@ export default function SettingsScreen() {
             style={styles.textInput}
             value={backendApiUrl}
             onChangeText={setBackendApiUrl}
-            placeholder="https://threesaj-studio-dub-app.onrender.com"
+            placeholder="https://threesaj-studio-dub-app-734y.onrender.com"
             placeholderTextColor="#64748B"
             autoCapitalize="none"
             autoCorrect={false}
           />
           <Text style={styles.helperText}>
-            Points to your 3SAJ backend server (e.g. https://threesaj-studio-dub-app.onrender.com).
+            Points to your 3SAJ backend server (e.g. https://threesaj-studio-dub-app-734y.onrender.com).
           </Text>
           <TouchableOpacity
             style={styles.testBackendBtn}
